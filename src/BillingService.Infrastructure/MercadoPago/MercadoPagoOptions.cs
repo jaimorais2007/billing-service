@@ -13,4 +13,6 @@ public class MercadoPagoOptions
     public string NotificationUrl { get; set; } = string.Empty;
 
     public bool UseSandbox { get; set; }
+
+    public int CheckoutExpirationMinutes { get; set; } = 60;
 }

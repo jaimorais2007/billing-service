@@ -67,12 +67,24 @@ public class PaymentTransaction : VersionedEntity
         Version = version
     };
 
+    public bool IsOpenAt(DateTime now, TimeSpan lifetime) =>
+        Status is PaymentStatus.Pending or PaymentStatus.Refused && CreatedAt.Add(lifetime) > now;
+
     public bool Pay()
     {
-        if (Status is not (PaymentStatus.Pending or PaymentStatus.Refused))
+        if (Status is not (PaymentStatus.Pending or PaymentStatus.Refused or PaymentStatus.Cancelled))
             return false;
 
         Status = PaymentStatus.Paid;
+        return true;
+    }
+
+    public bool Cancel()
+    {
+        if (Status != PaymentStatus.Pending)
+            return false;
+
+        Status = PaymentStatus.Cancelled;
         return true;
     }
 

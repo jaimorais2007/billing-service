@@ -1,6 +1,6 @@
 namespace BillingService.Application.Abstractions;
 
-public sealed record ChargeRequest(Guid PaymentId, Guid ServiceOrderId, decimal TotalAmount);
+public sealed record ChargeRequest(Guid PaymentId, Guid ServiceOrderId, decimal TotalAmount, DateTime ExpiresAt);
 
 public sealed record ChargeResult(string GatewayTransactionId, string PaymentUrl);
 
@@ -13,9 +13,13 @@ public sealed record GatewayPayment(
 
 public interface IPaymentGateway
 {
+    TimeSpan CheckoutLifetime { get; }
+
     Task<ChargeResult> CreateChargeAsync(ChargeRequest request, CancellationToken cancellationToken);
 
     Task<GatewayPayment?> GetPaymentAsync(string transactionId, CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<GatewayPayment>> SearchPaymentsAsync(string externalReference, CancellationToken cancellationToken);
 }
 
 public interface IWebhookSignatureValidator

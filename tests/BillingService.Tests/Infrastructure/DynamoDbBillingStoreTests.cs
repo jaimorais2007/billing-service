@@ -198,6 +198,62 @@ public class DynamoDbBillingStoreTests
             It.IsAny<CancellationToken>()));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Commit_Claim_ShouldGuardActivePaymentOfTheOrder(bool hasPrevious)
+    {
+        var request = CaptureCommit();
+        var orderId = Guid.NewGuid();
+        var previous = Guid.NewGuid();
+        var next = Guid.NewGuid();
+
+        await Store.CommitAsync(new BillingChanges().ClaimOrder(orderId, hasPrevious ? previous : null, next), CancellationToken.None);
+
+        var put = Assert.Single(request.TransactItems).Put;
+        Assert.Equal($"ORDER#{orderId:D}", put.Item["pk"].S);
+        Assert.Equal("ACTIVE_PAYMENT", put.Item["sk"].S);
+        Assert.Equal(next.ToString("D"), put.Item["activePaymentId"].S);
+        if (hasPrevious)
+        {
+            Assert.Equal("attribute_not_exists(pk) OR activePaymentId = :expected", put.ConditionExpression);
+            Assert.Equal(previous.ToString("D"), put.ExpressionAttributeValues[":expected"].S);
+        }
+        else
+        {
+            Assert.Equal("attribute_not_exists(pk)", put.ConditionExpression);
+        }
+    }
+
+    [Fact]
+    public async Task ListPayments_ByOrder_ShouldFilterThePaymentPartition()
+    {
+        var writes = CaptureCommit();
+        var orderId = Guid.NewGuid();
+        await Store.CommitAsync(new BillingChanges().Save(TestData.NewPayment(orderId)), CancellationToken.None);
+        _dynamo.Setup(x => x.QueryAsync(It.IsAny<QueryRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new QueryResponse { Items = [writes.TransactItems[0].Put.Item] });
+
+        var payments = await Store.ListPaymentsAsync(orderId, CancellationToken.None);
+
+        Assert.Equal(orderId, Assert.Single(payments).ServiceOrderId);
+        _dynamo.Verify(x => x.QueryAsync(It.Is<QueryRequest>(r =>
+            r.FilterExpression == "serviceOrderId = :order" &&
+            r.ExpressionAttributeValues[":order"].S == orderId.ToString("D") &&
+            r.ExpressionAttributeValues[":pk"].S == "PAYMENT"), It.IsAny<CancellationToken>()));
+    }
+
+    [Fact]
+    public async Task ListPayments_WithoutOrder_ShouldNotFilter()
+    {
+        _dynamo.Setup(x => x.QueryAsync(It.IsAny<QueryRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new QueryResponse { Items = [] });
+
+        Assert.Empty(await Store.ListPaymentsAsync(null, CancellationToken.None));
+
+        _dynamo.Verify(x => x.QueryAsync(It.Is<QueryRequest>(r => r.FilterExpression == null), It.IsAny<CancellationToken>()));
+    }
+
     [Fact]
     public async Task Gets_WhenMissing_ShouldReturnNull()
     {
@@ -306,6 +362,13 @@ public class DynamoDbLocalIntegrationTests : IAsyncLifetime
         stale.RemoveStock(1);
         await Assert.ThrowsAsync<ConcurrencyConflictException>(() => Store.CommitAsync(new BillingChanges().Save(stale), ct));
         Assert.Equal(7, (await Store.GetPartAsync(part.Id, ct))!.QuantityInStock);
+
+        await Store.CommitAsync(new BillingChanges().ClaimOrder(payment.ServiceOrderId, null, payment.Id), ct);
+        await Assert.ThrowsAsync<ConcurrencyConflictException>(() =>
+            Store.CommitAsync(new BillingChanges().ClaimOrder(payment.ServiceOrderId, null, Guid.NewGuid()), ct));
+        await Store.CommitAsync(new BillingChanges().ClaimOrder(payment.ServiceOrderId, payment.Id, Guid.NewGuid()), ct);
+        Assert.Single(await Store.ListPaymentsAsync(payment.ServiceOrderId, ct));
+        Assert.Empty(await Store.ListPaymentsAsync(Guid.NewGuid(), ct));
 
         var loaded = (await Store.GetPaymentAsync(payment.Id, ct))!;
         loaded.Pay();

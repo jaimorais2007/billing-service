@@ -12,6 +12,7 @@ public class InMemoryBillingStore : IBillingStore, IOutboxStore
 {
     private readonly object _lock = new();
     private readonly Dictionary<(string Partition, Guid Id), Dictionary<string, AttributeValue>> _items = [];
+    private readonly Dictionary<Guid, Guid> _activePayments = [];
     private readonly List<OutboxMessage> _outbox = [];
 
     public Task<IReadOnlyList<Service>> ListServicesAsync(CancellationToken cancellationToken) =>
@@ -29,6 +30,12 @@ public class InMemoryBillingStore : IBillingStore, IOutboxStore
     public Task<PaymentTransaction?> GetPaymentAsync(Guid id, CancellationToken cancellationToken) =>
         Task.FromResult(Get(PaymentPartition, id) is { } item ? ToPayment(item) : null);
 
+    public Task<IReadOnlyList<PaymentTransaction>> ListPaymentsAsync(Guid? serviceOrderId, CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<PaymentTransaction>>(List(PaymentPartition)
+            .Select(ToPayment)
+            .Where(p => serviceOrderId is null || p.ServiceOrderId == serviceOrderId)
+            .ToList());
+
     public Task CommitAsync(BillingChanges changes, CancellationToken cancellationToken)
     {
         lock (_lock)
@@ -36,7 +43,10 @@ public class InMemoryBillingStore : IBillingStore, IOutboxStore
             var conflict =
                 changes.Services.Any(s => CurrentVersion(ServicePartition, s.Id) != s.Version)
                 || changes.Parts.Any(p => CurrentVersion(PartPartition, p.Id) != p.Version)
-                || changes.Payments.Any(p => CurrentVersion(PaymentPartition, p.Id) != p.Version);
+                || changes.Payments.Any(p => CurrentVersion(PaymentPartition, p.Id) != p.Version)
+                || (changes.Claim is { } claim
+                    && _activePayments.TryGetValue(claim.ServiceOrderId, out var active)
+                    && active != claim.ExpectedActivePaymentId);
 
             if (conflict)
                 throw new ConcurrencyConflictException("The record was changed by another operation. Please try again.");
@@ -47,6 +57,9 @@ public class InMemoryBillingStore : IBillingStore, IOutboxStore
                 Put(PartPartition, p.Id, ToItem(p), p);
             foreach (var p in changes.Payments)
                 Put(PaymentPartition, p.Id, ToItem(p), p);
+
+            if (changes.Claim is { } newClaim)
+                _activePayments[newClaim.ServiceOrderId] = newClaim.NewActivePaymentId;
 
             _outbox.AddRange(changes.Outbox);
         }

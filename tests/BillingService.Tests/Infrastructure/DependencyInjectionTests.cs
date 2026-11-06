@@ -64,7 +64,10 @@ public class DependencyInjectionTests
         Assert.IsType<DynamoDbBillingStore>(provider.GetRequiredService<IOutboxStore>());
         Assert.IsType<SnsEventPublisher>(provider.GetRequiredService<IEventPublisher>());
         Assert.NotNull(provider.GetRequiredService<IAmazonDynamoDB>());
-        Assert.IsType<OutboxPublisherBackgroundService>(Assert.Single(provider.GetServices<IHostedService>()));
+        var hosted = provider.GetServices<IHostedService>().ToList();
+        Assert.Equal(2, hosted.Count);
+        Assert.Contains(hosted, h => h is OutboxPublisherBackgroundService);
+        Assert.Contains(hosted, h => h is PaymentExpirationBackgroundService);
     }
 
     [Fact]

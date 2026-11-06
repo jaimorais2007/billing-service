@@ -22,12 +22,19 @@ Feito em **.NET 8**, com Clean Architecture, **DynamoDB** e eventos publicados n
 | Deletar peça | `DELETE /api/Parts/{id}` | 204, exclusão lógica + evento `PartDeleted` | 404 |
 | Adicionar estoque | `POST /api/Parts/{id}/add-stock` (Quantity) | 204 + evento `PartStockAdded` (PartId, AvailableQuantity) | 404, 400 |
 | Retirar estoque | `POST /api/Parts/{id}/remove-stock` (Quantity) | 204 | 404, 400 |
-| Criar pedido de pagamento | `POST /api/Payments` (Value, ServiceOrderId, ServiceIds, Parts[PartId, Quantity]) | 201 (PaymentUrl, Status, TotalAmount) | 400, 502 |
+| Criar pedido de pagamento | `POST /api/Payments` (Value, ServiceOrderId, ServiceIds, Parts[PartId, Quantity]) | 201 (PaymentUrl, Status, TotalAmount); 200 se já houver checkout aberto com o mesmo valor | 400, 409, 502 |
 | Receber webhook do pagamento | `POST /api/webhooks/mercadopago` | 200 + `PaymentConfirmed` ou `PaymentExpired` | 404, 401 |
 
 * Serviços e peças excluídos (inativos) não aparecem na busca nem na listagem e respondem 404.
 * O código da peça é único entre as peças ativas.
 * No pedido de pagamento, o valor precisa ser positivo e todos os serviços e peças informados precisam existir e estar ativos. Caso contrário, a resposta é 400 (`Invalid or inactive part or service.`). Se o Mercado Pago falhar, a resposta é 502.
+
+### Um pagamento por OS e expiração do checkout
+
+* **Trava:** cada OS tem um item `ORDER#<osId>` com o pagamento ativo, gravado na mesma transação do pagamento com condição sobre o valor anterior. Duas requisições simultâneas para a mesma OS não criam duas cobranças: a segunda recebe 409.
+* **Checkout aberto:** se a OS já tiver um checkout `Pending` ou `Refused` dentro do prazo, ele é devolvido (200) em vez de criar outro. Com valor diferente, a resposta é 409. Se a OS já estiver paga, a resposta é 400.
+* **Expiração:** o checkout é criado no Mercado Pago com validade de `CheckoutExpirationMinutes` (padrão 60). A cada 5 minutos, os pagamentos `Pending` vencidos são consultados no Mercado Pago: se houver um pagamento aprovado, viram `Paid`; senão, viram `Cancelled` e é publicado `PaymentExpired` (ServiceOrderId, GatewayTransactionId).
+* **Aprovação tardia:** se um checkout cancelado for aprovado depois, ele vira `Paid`, exceto quando outro pagamento da mesma OS já está pago. Nesse caso, o erro vai para o log para estorno manual.
 
 ### Webhook do Mercado Pago
 
@@ -53,7 +60,7 @@ Tabela única `oficina-billing` no DynamoDB (criada em `infra-terraform/dynamodb
 * `status`: `Pending`, `Paid`, `Refused`, `Cancelled` ou `Refunded`.
 * `gatewayTransactionId` guarda o id da preferência criada no Mercado Pago e alimenta o GSI `by-gateway-transaction`.
 * Cada item tem `version` para concorrência otimista. Um conflito devolve 409.
-* Itens técnicos: `OUTBOX` / `<occurredAt>#<eventId>`, com os eventos ainda não publicados no SNS.
+* Itens técnicos: `OUTBOX` / `<occurredAt>#<eventId>`, com os eventos ainda não publicados no SNS, e `ORDER#<osId>` / `ACTIVE_PAYMENT`, a trava de pagamento por OS.
 
 ---
 

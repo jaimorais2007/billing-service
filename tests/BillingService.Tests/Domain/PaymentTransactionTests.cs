@@ -46,6 +46,36 @@ public class PaymentTransactionTests
     }
 
     [Fact]
+    public void Cancel_ShouldOnlyApplyToPendingAndAllowLatePayment()
+    {
+        var payment = TestData.NewPayment();
+
+        Assert.True(payment.Cancel());
+        Assert.False(payment.Cancel());
+        Assert.False(payment.Refuse());
+        Assert.Equal(PaymentStatus.Cancelled, payment.Status);
+
+        Assert.True(payment.Pay());
+        Assert.False(payment.Cancel());
+    }
+
+    [Fact]
+    public void IsOpenAt_ShouldConsiderStatusAndLifetime()
+    {
+        var payment = TestData.NewPayment();
+        var lifetime = TimeSpan.FromHours(1);
+
+        Assert.True(payment.IsOpenAt(TestData.Now, lifetime));
+        Assert.False(payment.IsOpenAt(TestData.Now.AddHours(1), lifetime));
+
+        payment.Refuse();
+        Assert.True(payment.IsOpenAt(TestData.Now, lifetime));
+
+        payment.Pay();
+        Assert.False(payment.IsOpenAt(TestData.Now, lifetime));
+    }
+
+    [Fact]
     public void Refuse_ShouldOnlyApplyToPending()
     {
         var payment = TestData.NewPayment();

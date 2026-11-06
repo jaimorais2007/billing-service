@@ -3,6 +3,8 @@ using BillingService.Domain.Entities;
 
 namespace BillingService.Application.Abstractions;
 
+public sealed record OrderPaymentClaim(Guid ServiceOrderId, Guid? ExpectedActivePaymentId, Guid NewActivePaymentId);
+
 public sealed class BillingChanges
 {
     private readonly Dictionary<Guid, Service> _services = [];
@@ -15,7 +17,16 @@ public sealed class BillingChanges
     public IReadOnlyCollection<PaymentTransaction> Payments => _payments.Values;
     public IReadOnlyList<OutboxMessage> Outbox => _outbox;
 
-    public bool HasChanges => _services.Count > 0 || _parts.Count > 0 || _payments.Count > 0 || _outbox.Count > 0;
+    public OrderPaymentClaim? Claim { get; private set; }
+
+    public bool HasChanges =>
+        _services.Count > 0 || _parts.Count > 0 || _payments.Count > 0 || _outbox.Count > 0 || Claim is not null;
+
+    public BillingChanges ClaimOrder(Guid serviceOrderId, Guid? expectedActivePaymentId, Guid newActivePaymentId)
+    {
+        Claim = new OrderPaymentClaim(serviceOrderId, expectedActivePaymentId, newActivePaymentId);
+        return this;
+    }
 
     public BillingChanges Save(Service service)
     {
@@ -53,6 +64,8 @@ public interface IBillingStore
     Task<Part?> GetPartAsync(Guid id, CancellationToken cancellationToken);
 
     Task<PaymentTransaction?> GetPaymentAsync(Guid id, CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<PaymentTransaction>> ListPaymentsAsync(Guid? serviceOrderId, CancellationToken cancellationToken);
 
     Task CommitAsync(BillingChanges changes, CancellationToken cancellationToken);
 }

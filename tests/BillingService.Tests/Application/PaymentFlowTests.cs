@@ -45,12 +45,15 @@ public class PaymentFlowTests
         var orderId = Guid.NewGuid();
         var (service, part) = await SeedCatalogAsync();
 
-        var created = await Service.CreateAsync(
+        var outcome = await Service.CreateAsync(
             new CreatePaymentRequest(Value, orderId, [service.Id], [new PaymentPartRequest(part.Id, 2)]), _ct);
+        var created = outcome.Payment;
 
+        Assert.True(outcome.Created);
         var charge = Assert.Single(_gateway.Charges);
         Assert.Equal(orderId, charge.ServiceOrderId);
         Assert.Equal(Value, charge.TotalAmount);
+        Assert.Equal(TestData.Now.AddHours(1), charge.ExpiresAt);
         Assert.Equal(new PaymentCreatedDto($"https://mp.test/{charge.PaymentId:N}", PaymentStatus.Pending, Value), created);
 
         var stored = (await _store.GetPaymentAsync(charge.PaymentId, _ct))!;
@@ -58,6 +61,66 @@ public class PaymentFlowTests
         Assert.Equal($"pref-{charge.PaymentId:N}", stored.GatewayTransactionId);
         Assert.Equal(created.PaymentUrl, stored.PaymentUrl);
         Assert.Equal(TestData.Now, stored.CreatedAt);
+    }
+
+    [Fact]
+    public async Task Create_WithOpenPayment_ShouldReuseItWithoutNewCharge()
+    {
+        var orderId = Guid.NewGuid();
+        var first = await CreatePaymentAsync(orderId);
+
+        var second = await Service.CreateAsync(new CreatePaymentRequest(Value, orderId, null, null), _ct);
+
+        Assert.False(second.Created);
+        Assert.Equal(first.PaymentUrl, second.Payment.PaymentUrl);
+        Assert.Single(_gateway.Charges);
+    }
+
+    [Fact]
+    public async Task Create_WithOpenPaymentOfDifferentValue_ShouldThrowConflict()
+    {
+        var orderId = Guid.NewGuid();
+        await CreatePaymentAsync(orderId);
+
+        await Assert.ThrowsAsync<ConcurrencyConflictException>(() =>
+            Service.CreateAsync(new CreatePaymentRequest(1m, orderId, null, null), _ct));
+    }
+
+    [Fact]
+    public async Task Create_AfterCheckoutExpired_ShouldCreateAnother()
+    {
+        var orderId = Guid.NewGuid();
+        await CreatePaymentAsync(orderId);
+        _clock.Now = _clock.Now.AddHours(2);
+
+        var second = await Service.CreateAsync(new CreatePaymentRequest(Value, orderId, null, null), _ct);
+
+        Assert.True(second.Created);
+        Assert.Equal(2, _gateway.Charges.Count);
+    }
+
+    [Fact]
+    public async Task Create_ForAlreadyPaidOrder_ShouldThrow()
+    {
+        var orderId = Guid.NewGuid();
+        var payment = await CreatePaymentAsync(orderId);
+        Transaction(payment, "1", "approved");
+        await Service.HandleGatewayNotificationAsync("1", _ct);
+
+        await Assert.ThrowsAsync<DomainException>(() => Service.CreateAsync(new CreatePaymentRequest(Value, orderId, null, null), _ct));
+    }
+
+    [Fact]
+    public async Task Create_Concurrent_ShouldNotStoreTwoPaymentsForSameOrder()
+    {
+        var orderId = Guid.NewGuid();
+        await CreatePaymentAsync(orderId);
+        var concurrent = TestData.NewPayment(orderId);
+
+        await Assert.ThrowsAsync<ConcurrencyConflictException>(() =>
+            _store.CommitAsync(new BillingChanges().Save(concurrent).ClaimOrder(orderId, null, concurrent.Id), _ct));
+
+        Assert.Single(await _store.ListPaymentsAsync(orderId, _ct));
     }
 
     [Theory]
@@ -222,5 +285,70 @@ public class PaymentFlowTests
         Assert.Equal(NotificationResult.TransactionNotFound, await Service.HandleGatewayNotificationAsync("3", _ct));
 
         Assert.Empty(await TestData.PendingEventsAsync(_store));
+    }
+
+    [Fact]
+    public async Task Webhook_ApprovedWhileAnotherPaymentIsPaid_ShouldNotMarkDuplicate()
+    {
+        var orderId = Guid.NewGuid();
+        var old = await CreatePaymentAsync(orderId);
+        _clock.Now = _clock.Now.AddHours(2);
+        await Service.ExpireOverdueAsync(_ct);
+        var current = await CreatePaymentAsync(orderId);
+        Transaction(current, "2", "approved");
+        await Service.HandleGatewayNotificationAsync("2", _ct);
+
+        Transaction(old, "1", "approved");
+        await Service.HandleGatewayNotificationAsync("1", _ct);
+
+        Assert.Equal(PaymentStatus.Cancelled, (await _store.GetPaymentAsync(old.Id, _ct))!.Status);
+        Assert.Equal(PaymentStatus.Paid, (await _store.GetPaymentAsync(current.Id, _ct))!.Status);
+    }
+
+    [Fact]
+    public async Task ExpireOverdue_ShouldCancelOnlyOverduePendingPaymentsAndPublishPaymentExpired()
+    {
+        var overdue = await CreatePaymentAsync();
+        _clock.Now = _clock.Now.AddMinutes(50);
+        var open = await CreatePaymentAsync();
+        _clock.Now = _clock.Now.AddMinutes(20);
+
+        await Service.ExpireOverdueAsync(_ct);
+
+        Assert.Equal(PaymentStatus.Cancelled, (await _store.GetPaymentAsync(overdue.Id, _ct))!.Status);
+        Assert.Equal(PaymentStatus.Pending, (await _store.GetPaymentAsync(open.Id, _ct))!.Status);
+        var expired = Assert.Single(await TestData.PendingEventsAsync(_store));
+        Assert.Equal(EventTypes.PaymentExpired, expired.EventType);
+        Assert.Equal(overdue.ServiceOrderId, expired.Payload.GetProperty("serviceOrderId").GetGuid());
+    }
+
+    [Fact]
+    public async Task ExpireOverdue_WithApprovedPaymentInGateway_ShouldMarkPaidInsteadOfCancel()
+    {
+        var payment = await CreatePaymentAsync();
+        Transaction(payment, "1", "rejected");
+        Transaction(payment, "2", "approved");
+        _clock.Now = _clock.Now.AddHours(2);
+
+        await Service.ExpireOverdueAsync(_ct);
+
+        Assert.Equal(PaymentStatus.Paid, (await _store.GetPaymentAsync(payment.Id, _ct))!.Status);
+        Assert.Equal(EventTypes.PaymentConfirmed, Assert.Single(await TestData.PendingEventsAsync(_store)).EventType);
+    }
+
+    [Fact]
+    public async Task ExpireOverdue_ShouldIgnoreRefusedAndPaidPayments()
+    {
+        var refused = await CreatePaymentAsync();
+        Transaction(refused, "1", "rejected");
+        await Service.HandleGatewayNotificationAsync("1", _ct);
+        _clock.Now = _clock.Now.AddHours(2);
+        _gateway.Transactions.Clear();
+        var before = (await TestData.PendingEventsAsync(_store)).Count;
+
+        await Service.ExpireOverdueAsync(_ct);
+
+        Assert.Equal(PaymentStatus.Refused, (await _store.GetPaymentAsync(refused.Id, _ct))!.Status);
+        Assert.Equal(before, (await TestData.PendingEventsAsync(_store)).Count);
     }
 }

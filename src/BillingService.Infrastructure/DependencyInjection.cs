@@ -48,6 +48,7 @@ public static class DependencyInjection
         services.AddSingleton<IWebhookSignatureValidator, MercadoPagoSignatureValidator>();
 
         services.AddHostedService<OutboxPublisherBackgroundService>();
+        services.AddHostedService<PaymentExpirationBackgroundService>();
 
         return services;
     }

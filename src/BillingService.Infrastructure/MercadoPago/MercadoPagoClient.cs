@@ -22,13 +22,18 @@ public class MercadoPagoClient(HttpClient http, IOptions<MercadoPagoOptions> opt
 
     private readonly MercadoPagoOptions _options = options.Value;
 
+    public TimeSpan CheckoutLifetime => TimeSpan.FromMinutes(_options.CheckoutExpirationMinutes);
+
     public async Task<ChargeResult> CreateChargeAsync(ChargeRequest request, CancellationToken cancellationToken)
     {
         var reference = request.PaymentId.ToString("D");
         var body = new PreferenceRequest(
             [new PreferenceItem(reference, $"Service order {request.ServiceOrderId:D}", 1, request.TotalAmount, PaymentTransaction.Currency)],
             reference,
-            string.IsNullOrWhiteSpace(_options.NotificationUrl) ? null : _options.NotificationUrl);
+            string.IsNullOrWhiteSpace(_options.NotificationUrl) ? null : _options.NotificationUrl,
+            Expires: true,
+            ExpirationDateTo: DateTime.SpecifyKind(request.ExpiresAt, DateTimeKind.Utc)
+                .ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture));
 
         using var message = CreateRequest(HttpMethod.Post, "/checkout/preferences", reference);
         message.Content = JsonContent.Create(body, options: Json);
@@ -52,15 +57,24 @@ public class MercadoPagoClient(HttpClient http, IOptions<MercadoPagoOptions> opt
 
         await EnsureSuccessAsync(response, cancellationToken);
         var payment = await response.Content.ReadFromJsonAsync<PaymentResponse>(Json, cancellationToken);
-        return payment is null
-            ? null
-            : new GatewayPayment(
-                payment.Id.ToString(CultureInfo.InvariantCulture),
-                payment.Status ?? string.Empty,
-                payment.ExternalReference,
-                payment.TransactionAmount,
-                payment.CurrencyId);
+        return payment is null ? null : ToGatewayPayment(payment);
     }
+
+    public async Task<IReadOnlyList<GatewayPayment>> SearchPaymentsAsync(string externalReference, CancellationToken cancellationToken)
+    {
+        var path = "/v1/payments/search?sort=date_created&criteria=desc&external_reference=" + Uri.EscapeDataString(externalReference);
+        using var message = CreateRequest(HttpMethod.Get, path);
+
+        var search = await SendAsync<SearchResponse>(message, cancellationToken);
+        return (search.Results ?? []).Select(ToGatewayPayment).ToList();
+    }
+
+    private static GatewayPayment ToGatewayPayment(PaymentResponse payment) => new(
+        payment.Id.ToString(CultureInfo.InvariantCulture),
+        payment.Status ?? string.Empty,
+        payment.ExternalReference,
+        payment.TransactionAmount,
+        payment.CurrencyId);
 
     private HttpRequestMessage CreateRequest(HttpMethod method, string path, string? idempotencyKey = null)
     {
@@ -111,7 +125,14 @@ public class MercadoPagoClient(HttpClient http, IOptions<MercadoPagoOptions> opt
 
     private sealed record PreferenceItem(string Id, string Title, int Quantity, decimal UnitPrice, string CurrencyId);
 
-    private sealed record PreferenceRequest(IReadOnlyList<PreferenceItem> Items, string ExternalReference, string? NotificationUrl);
+    private sealed record PreferenceRequest(
+        IReadOnlyList<PreferenceItem> Items,
+        string ExternalReference,
+        string? NotificationUrl,
+        bool Expires,
+        string ExpirationDateTo);
+
+    private sealed record SearchResponse(IReadOnlyList<PaymentResponse>? Results);
 
     private sealed record PreferenceResponse(string? Id, string? InitPoint, string? SandboxInitPoint);
 

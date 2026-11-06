@@ -219,6 +219,22 @@ public class ApiIntegrationTests(BillingApiFactory factory) : IClassFixture<Bill
     }
 
     [Fact]
+    public async Task CreatePayment_WithOpenPayment_ShouldReturn200OrConflict()
+    {
+        var orderId = Guid.NewGuid();
+        var first = await _client.PostAsJsonAsync("/api/Payments", new CreatePaymentRequest(250m, orderId, null, null));
+        Assert.Equal(HttpStatusCode.Created, first.StatusCode);
+
+        var again = await _client.PostAsJsonAsync("/api/Payments", new CreatePaymentRequest(250m, orderId, null, null));
+        Assert.Equal(HttpStatusCode.OK, again.StatusCode);
+        Assert.Equal((await ReadJsonAsync(first)).GetProperty("paymentUrl").GetString(),
+            (await ReadJsonAsync(again)).GetProperty("paymentUrl").GetString());
+
+        var different = await _client.PostAsJsonAsync("/api/Payments", new CreatePaymentRequest(99m, orderId, null, null));
+        Assert.Equal(HttpStatusCode.Conflict, different.StatusCode);
+    }
+
+    [Fact]
     public async Task CreatePayment_WithInvalidItem_ShouldReturn400()
     {
         var response = await _client.PostAsJsonAsync("/api/Payments",

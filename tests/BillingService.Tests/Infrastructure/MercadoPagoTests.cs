@@ -110,7 +110,50 @@ public class MercadoPagoClientTests
         return new MercadoPagoClient(new HttpClient(handler) { BaseAddress = new Uri("https://mp.test") }, Options.Create(options));
     }
 
-    private static ChargeRequest Charge() => new(Guid.NewGuid(), Guid.NewGuid(), 311.50m);
+    private static ChargeRequest Charge() =>
+        new(Guid.NewGuid(), Guid.NewGuid(), 311.50m, new DateTime(2026, 11, 3, 13, 0, 0, DateTimeKind.Utc));
+
+    [Fact]
+    public async Task CreateCharge_ShouldSendCheckoutExpirationInUtc()
+    {
+        var handler = new StubHandler(_ => Json("""{"id":"pref-1","init_point":"https://prod"}"""));
+
+        await Client(handler).CreateChargeAsync(Charge(), CancellationToken.None);
+
+        using var body = JsonDocument.Parse(handler.Body!);
+        Assert.True(body.RootElement.GetProperty("expires").GetBoolean());
+        Assert.Equal("2026-11-03T13:00:00.000Z", body.RootElement.GetProperty("expiration_date_to").GetString());
+        Assert.DoesNotContain(@"+", handler.Body);
+    }
+
+    [Fact]
+    public void CheckoutLifetime_ShouldComeFromConfiguration()
+    {
+        var handler = new StubHandler(_ => Json("{}"));
+
+        Assert.Equal(TimeSpan.FromMinutes(30), Client(handler, o => o.CheckoutExpirationMinutes = 30).CheckoutLifetime);
+    }
+
+    [Fact]
+    public async Task SearchPayments_ShouldFilterByExternalReference()
+    {
+        var handler = new StubHandler(_ => Json(
+            """{"paging":{"total":1},"results":[{"id":5,"status":"approved","external_reference":"ref-1","transaction_amount":10,"currency_id":"BRL"}]}"""));
+
+        var results = await Client(handler).SearchPaymentsAsync("ref-1", CancellationToken.None);
+
+        Assert.Equal(new GatewayPayment("5", "approved", "ref-1", 10m, "BRL"), Assert.Single(results));
+        Assert.Equal("/v1/payments/search", handler.Request!.RequestUri!.AbsolutePath);
+        Assert.Contains("external_reference=ref-1", handler.Request.RequestUri.Query);
+    }
+
+    [Fact]
+    public async Task SearchPayments_WithoutResults_ShouldReturnEmpty()
+    {
+        var handler = new StubHandler(_ => Json("""{"paging":{"total":0}}"""));
+
+        Assert.Empty(await Client(handler).SearchPaymentsAsync("ref-1", CancellationToken.None));
+    }
 
     [Fact]
     public async Task CreateCharge_ShouldSendPreferenceWithTokenAndIdempotencyKey()

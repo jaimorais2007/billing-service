@@ -27,8 +27,13 @@ public class FakeGateway : IPaymentGateway
         return Task.FromResult(new ChargeResult($"pref-{request.PaymentId:N}", $"https://mp.test/{request.PaymentId:N}"));
     }
 
+    public TimeSpan CheckoutLifetime { get; set; } = TimeSpan.FromHours(1);
+
     public Task<GatewayPayment?> GetPaymentAsync(string transactionId, CancellationToken cancellationToken) =>
         Task.FromResult(Transactions.GetValueOrDefault(transactionId));
+
+    public Task<IReadOnlyList<GatewayPayment>> SearchPaymentsAsync(string externalReference, CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<GatewayPayment>>(Transactions.Values.Where(t => t.ExternalReference == externalReference).ToList());
 }
 
 public static class TestData

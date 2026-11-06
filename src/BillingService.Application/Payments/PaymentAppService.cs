@@ -1,4 +1,5 @@
 using BillingService.Application.Abstractions;
+using BillingService.Application.Common;
 using BillingService.Application.Messaging;
 using BillingService.Domain.Entities;
 using BillingService.Domain.Enums;
@@ -17,6 +18,8 @@ public sealed record CreatePaymentRequest(
 
 public sealed record PaymentCreatedDto(string PaymentUrl, PaymentStatus Status, decimal TotalAmount);
 
+public sealed record CreatePaymentOutcome(PaymentCreatedDto Payment, bool Created);
+
 public enum NotificationResult
 {
     Processed,
@@ -32,27 +35,44 @@ public class PaymentAppService(
     private const string ApprovedStatus = "approved";
     private static readonly string[] RefusedStatuses = ["rejected", "cancelled"];
 
-    public async Task<PaymentCreatedDto> CreateAsync(CreatePaymentRequest request, CancellationToken cancellationToken)
+    public async Task<CreatePaymentOutcome> CreateAsync(CreatePaymentRequest request, CancellationToken cancellationToken)
     {
         if (request.Value <= 0)
             throw new DomainException("The payment value must be greater than zero.");
         if (request.ServiceOrderId == Guid.Empty)
             throw new DomainException("The payment must be linked to a service order.");
 
+        var now = clock.GetUtcNow().UtcDateTime;
+        var existing = await store.ListPaymentsAsync(request.ServiceOrderId, cancellationToken);
+
+        if (existing.Any(p => p.Status == PaymentStatus.Paid))
+            throw new DomainException("This service order already has a paid payment.");
+
+        var open = existing.FirstOrDefault(p => p.IsOpenAt(now, gateway.CheckoutLifetime));
+        if (open is not null)
+        {
+            if (open.TotalAmount != request.Value)
+                throw new ConcurrencyConflictException("This service order already has an open payment with a different value.");
+            return new CreatePaymentOutcome(ToDto(open), false);
+        }
+
         await EnsureItemsAreValidAsync(request, cancellationToken);
 
         var paymentId = Guid.NewGuid();
         var charge = await gateway.CreateChargeAsync(
-            new ChargeRequest(paymentId, request.ServiceOrderId, request.Value),
+            new ChargeRequest(paymentId, request.ServiceOrderId, request.Value, now.Add(gateway.CheckoutLifetime)),
             cancellationToken);
 
         var payment = PaymentTransaction.Create(
-            paymentId, request.ServiceOrderId, request.Value, charge.GatewayTransactionId, charge.PaymentUrl, clock.GetUtcNow().UtcDateTime);
+            paymentId, request.ServiceOrderId, request.Value, charge.GatewayTransactionId, charge.PaymentUrl, now);
+        var latest = existing.OrderByDescending(p => p.CreatedAt).FirstOrDefault();
 
-        await store.CommitAsync(new BillingChanges().Save(payment), cancellationToken);
+        await store.CommitAsync(
+            new BillingChanges().Save(payment).ClaimOrder(request.ServiceOrderId, latest?.Id, paymentId),
+            cancellationToken);
 
         logger.LogInformation("Payment {PaymentId} created for service order {ServiceOrderId}", paymentId, request.ServiceOrderId);
-        return new PaymentCreatedDto(payment.PaymentUrl, payment.Status, payment.TotalAmount);
+        return new CreatePaymentOutcome(ToDto(payment), true);
     }
 
     public async Task<NotificationResult> HandleGatewayNotificationAsync(string transactionId, CancellationToken cancellationToken)
@@ -68,11 +88,45 @@ public class PaymentAppService(
             return NotificationResult.TransactionNotFound;
         }
 
+        await ApplyAsync(payment, transaction, cancellationToken);
+        return NotificationResult.Processed;
+    }
+
+    public async Task ExpireOverdueAsync(CancellationToken cancellationToken)
+    {
+        var now = clock.GetUtcNow().UtcDateTime;
+        var overdue = (await store.ListPaymentsAsync(null, cancellationToken))
+            .Where(p => p.Status == PaymentStatus.Pending && !p.IsOpenAt(now, gateway.CheckoutLifetime))
+            .ToList();
+
+        foreach (var payment in overdue)
+        {
+            var approved = (await gateway.SearchPaymentsAsync(payment.Id.ToString("D"), cancellationToken))
+                .FirstOrDefault(t => t.Status == ApprovedStatus);
+            if (approved is not null)
+                await ApplyAsync(payment, approved, cancellationToken);
+
+            if (payment.Cancel())
+            {
+                await store.CommitAsync(
+                    new BillingChanges()
+                        .Save(payment)
+                        .Publish(EventTypes.PaymentExpired, payment.ServiceOrderId,
+                            new PaymentExpiredPayload(payment.ServiceOrderId, payment.GatewayTransactionId)),
+                    cancellationToken);
+
+                logger.LogInformation("Payment {PaymentId} for service order {ServiceOrderId} expired", payment.Id, payment.ServiceOrderId);
+            }
+        }
+    }
+
+    private async Task ApplyAsync(PaymentTransaction payment, GatewayPayment transaction, CancellationToken cancellationToken)
+    {
         var changes = new BillingChanges();
 
         if (transaction.Status == ApprovedStatus)
         {
-            if (AmountMatches(payment, transaction) && payment.Pay())
+            if (await CanPayAsync(payment, transaction, cancellationToken) && payment.Pay())
                 changes.Save(payment).Publish(
                     EventTypes.PaymentConfirmed,
                     payment.ServiceOrderId,
@@ -88,20 +142,29 @@ public class PaymentAppService(
 
         if (changes.HasChanges)
             await store.CommitAsync(changes, cancellationToken);
-
-        return NotificationResult.Processed;
     }
 
-    private bool AmountMatches(PaymentTransaction payment, GatewayPayment transaction)
+    private async Task<bool> CanPayAsync(PaymentTransaction payment, GatewayPayment transaction, CancellationToken cancellationToken)
     {
-        if (transaction.Amount == payment.TotalAmount
-            && string.Equals(transaction.Currency, PaymentTransaction.Currency, StringComparison.OrdinalIgnoreCase))
-            return true;
+        if (transaction.Amount != payment.TotalAmount
+            || !string.Equals(transaction.Currency, PaymentTransaction.Currency, StringComparison.OrdinalIgnoreCase))
+        {
+            logger.LogError(
+                "Transaction {TransactionId} of {Amount} {Currency} does not match payment {PaymentId} of {Expected} {ExpectedCurrency}; it will not be marked as paid",
+                transaction.TransactionId, transaction.Amount, transaction.Currency, payment.Id, payment.TotalAmount, PaymentTransaction.Currency);
+            return false;
+        }
 
-        logger.LogError(
-            "Transaction {TransactionId} of {Amount} {Currency} does not match payment {PaymentId} of {Expected} {ExpectedCurrency}; it will not be marked as paid",
-            transaction.TransactionId, transaction.Amount, transaction.Currency, payment.Id, payment.TotalAmount, PaymentTransaction.Currency);
-        return false;
+        var others = await store.ListPaymentsAsync(payment.ServiceOrderId, cancellationToken);
+        if (others.Any(p => p.Id != payment.Id && p.Status == PaymentStatus.Paid))
+        {
+            logger.LogError(
+                "Duplicate charge on service order {ServiceOrderId}: transaction {TransactionId} approved while another payment is already paid. Manual refund required",
+                payment.ServiceOrderId, transaction.TransactionId);
+            return false;
+        }
+
+        return true;
     }
 
     private async Task EnsureItemsAreValidAsync(CreatePaymentRequest request, CancellationToken cancellationToken)
@@ -122,4 +185,7 @@ public class PaymentAppService(
                 throw new DomainException("Invalid or inactive part or service.");
         }
     }
+
+    private static PaymentCreatedDto ToDto(PaymentTransaction payment) =>
+        new(payment.PaymentUrl, payment.Status, payment.TotalAmount);
 }

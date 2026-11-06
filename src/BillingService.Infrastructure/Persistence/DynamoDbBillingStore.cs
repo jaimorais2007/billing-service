@@ -13,6 +13,7 @@ namespace BillingService.Infrastructure.Persistence;
 public class DynamoDbBillingStore(IAmazonDynamoDB dynamo, string tableName) : IBillingStore, IOutboxStore
 {
     private const string OutboxPartition = "OUTBOX";
+    private const string ActivePaymentSortKey = "ACTIVE_PAYMENT";
 
     public async Task<IReadOnlyList<Service>> ListServicesAsync(CancellationToken cancellationToken) =>
         (await QueryPartitionAsync(ServicePartition, cancellationToken)).Select(ToService).ToList();
@@ -38,6 +39,18 @@ public class DynamoDbBillingStore(IAmazonDynamoDB dynamo, string tableName) : IB
         return item is null ? null : ToPayment(item);
     }
 
+    public async Task<IReadOnlyList<PaymentTransaction>> ListPaymentsAsync(Guid? serviceOrderId, CancellationToken cancellationToken)
+    {
+        var request = PartitionQuery(PaymentPartition);
+        if (serviceOrderId is { } orderId)
+        {
+            request.FilterExpression = "serviceOrderId = :order";
+            request.ExpressionAttributeValues[":order"] = S(orderId.ToString("D"));
+        }
+
+        return (await QueryAllAsync(request, cancellationToken)).Select(ToPayment).ToList();
+    }
+
     public async Task CommitAsync(BillingChanges changes, CancellationToken cancellationToken)
     {
         var writes = new List<TransactWriteItem>();
@@ -45,6 +58,8 @@ public class DynamoDbBillingStore(IAmazonDynamoDB dynamo, string tableName) : IB
         writes.AddRange(changes.Parts.Select(p => VersionedPut(ToItem(p), p.Version)));
         writes.AddRange(changes.Payments.Select(p => VersionedPut(ToItem(p), p.Version)));
         writes.AddRange(changes.Outbox.Select(m => new TransactWriteItem { Put = new Put { TableName = tableName, Item = ToOutboxItem(m) } }));
+        if (changes.Claim is { } claim)
+            writes.Add(ClaimWrite(claim));
 
         if (writes.Count == 0)
             return;
@@ -126,9 +141,38 @@ public class DynamoDbBillingStore(IAmazonDynamoDB dynamo, string tableName) : IB
         return response.Item is { Count: > 0 } item ? item : null;
     }
 
-    private async Task<List<Dictionary<string, AttributeValue>>> QueryPartitionAsync(string pk, CancellationToken cancellationToken)
+    private TransactWriteItem ClaimWrite(OrderPaymentClaim claim)
     {
-        var request = PartitionQuery(pk);
+        var put = new Put
+        {
+            TableName = tableName,
+            Item = new Dictionary<string, AttributeValue>
+            {
+                ["pk"] = S($"ORDER#{claim.ServiceOrderId:D}"),
+                ["sk"] = S(ActivePaymentSortKey),
+                ["entityType"] = S("OrderPayment"),
+                ["activePaymentId"] = S(claim.NewActivePaymentId.ToString("D"))
+            }
+        };
+
+        if (claim.ExpectedActivePaymentId is { } expected)
+        {
+            put.ConditionExpression = "attribute_not_exists(pk) OR activePaymentId = :expected";
+            put.ExpressionAttributeValues = new Dictionary<string, AttributeValue> { [":expected"] = S(expected.ToString("D")) };
+        }
+        else
+        {
+            put.ConditionExpression = "attribute_not_exists(pk)";
+        }
+
+        return new TransactWriteItem { Put = put };
+    }
+
+    private Task<List<Dictionary<string, AttributeValue>>> QueryPartitionAsync(string pk, CancellationToken cancellationToken) =>
+        QueryAllAsync(PartitionQuery(pk), cancellationToken);
+
+    private async Task<List<Dictionary<string, AttributeValue>>> QueryAllAsync(QueryRequest request, CancellationToken cancellationToken)
+    {
         var items = new List<Dictionary<string, AttributeValue>>();
         do
         {
