@@ -1,0 +1,86 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: billing-service
+  namespace: oficina
+  labels:
+    app: billing-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: billing-service
+  template:
+    metadata:
+      labels:
+        app: billing-service
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: billing-service
+          image: ghcr.io/jaimorais2007/billing-service:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+          env:
+            - name: ASPNETCORE_ENVIRONMENT
+              value: Production
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: billing-service-secret
+                  key: AWS_ACCESS_KEY_ID
+                  optional: true
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: billing-service-secret
+                  key: AWS_SECRET_ACCESS_KEY
+                  optional: true
+            - name: AWS__Region
+              value: us-east-1
+            - name: AWS__DynamoDbTable
+              valueFrom:
+                secretKeyRef:
+                  name: billing-service-secret
+                  key: DYNAMODB_TABLE
+                  optional: true
+            - name: AWS__SnsTopicArnPrefix
+              value: arn:aws:sns:us-east-1:168126498555:oficina
+            - name: MercadoPago__AccessToken
+              valueFrom:
+                secretKeyRef:
+                  name: billing-service-secret
+                  key: MERCADOPAGO_ACCESS_TOKEN
+                  optional: true
+            - name: MercadoPago__WebhookSecret
+              valueFrom:
+                secretKeyRef:
+                  name: billing-service-secret
+                  key: MERCADOPAGO_WEBHOOK_SECRET
+                  optional: true
+            - name: MercadoPago__NotificationUrl
+              value: https://kwzh4dl581.execute-api.us-east-1.amazonaws.com/api/webhooks/mercadopago
+            - name: MercadoPago__UseSandbox
+              value: "false"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+              ephemeral-storage: 64Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+              ephemeral-storage: 256Mi
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
