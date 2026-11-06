@@ -34,6 +34,7 @@ public class DependencyInjectionTests
     {
         ["AWS:DynamoDbTable"] = "oficina-billing",
         ["AWS:SnsTopicArnPrefix"] = "arn:aws:sns:us-east-1:168126498555:oficina",
+        ["AWS:SqsQueueUrl"] = "https://sqs.test/oficina-billing-events",
         ["AWS:Region"] = "us-east-1"
     };
 
@@ -45,14 +46,16 @@ public class DependencyInjectionTests
         Assert.Contains("DYNAMODB_TABLE", ex.Message);
     }
 
-    [Fact]
-    public void Production_WithoutTopicPrefix_ShouldNotStart()
+    [Theory]
+    [InlineData("AWS:SnsTopicArnPrefix", "SnsTopicArnPrefix")]
+    [InlineData("AWS:SqsQueueUrl", "SQS_QUEUE_URL")]
+    public void Production_WithoutMessaging_ShouldNotStart(string key, string expected)
     {
-        var settings = new Dictionary<string, string?>(AwsSettings) { ["AWS:SnsTopicArnPrefix"] = "" };
+        var settings = new Dictionary<string, string?>(AwsSettings) { [key] = "" };
 
         var ex = Assert.Throws<InvalidOperationException>(() => Build(Environments.Production, settings));
 
-        Assert.Contains("SnsTopicArnPrefix", ex.Message);
+        Assert.Contains(expected, ex.Message);
     }
 
     [Fact]
@@ -65,9 +68,11 @@ public class DependencyInjectionTests
         Assert.IsType<SnsEventPublisher>(provider.GetRequiredService<IEventPublisher>());
         Assert.NotNull(provider.GetRequiredService<IAmazonDynamoDB>());
         var hosted = provider.GetServices<IHostedService>().ToList();
-        Assert.Equal(2, hosted.Count);
+        Assert.Equal(3, hosted.Count);
         Assert.Contains(hosted, h => h is OutboxPublisherBackgroundService);
         Assert.Contains(hosted, h => h is PaymentExpirationBackgroundService);
+        Assert.Contains(hosted, h => h is SqsConsumerBackgroundService);
+        Assert.NotNull(provider.GetRequiredService<Amazon.SQS.IAmazonSQS>());
     }
 
     [Fact]

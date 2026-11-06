@@ -11,12 +11,13 @@ namespace BillingService.Application.Payments;
 public sealed record PaymentPartRequest(Guid PartId, int Quantity);
 
 public sealed record CreatePaymentRequest(
-    decimal Value,
     Guid ServiceOrderId,
-    IReadOnlyList<Guid>? ServiceIds,
-    IReadOnlyList<PaymentPartRequest>? Parts);
+    decimal? Value = null,
+    decimal? TotalAmount = null,
+    IReadOnlyList<Guid>? ServiceIds = null,
+    IReadOnlyList<PaymentPartRequest>? Parts = null);
 
-public sealed record PaymentCreatedDto(string PaymentUrl, PaymentStatus Status, decimal TotalAmount);
+public sealed record PaymentCreatedDto(string PaymentUrl, PaymentStatus Status, decimal TotalAmount, string TransactionId);
 
 public sealed record CreatePaymentOutcome(PaymentCreatedDto Payment, bool Created);
 
@@ -37,7 +38,11 @@ public class PaymentAppService(
 
     public async Task<CreatePaymentOutcome> CreateAsync(CreatePaymentRequest request, CancellationToken cancellationToken)
     {
-        if (request.Value <= 0)
+        if (request.Value is not null && request.TotalAmount is not null && request.Value != request.TotalAmount)
+            throw new DomainException("Value and TotalAmount must be equal when both are informed.");
+
+        var amount = request.Value ?? request.TotalAmount ?? 0m;
+        if (amount <= 0)
             throw new DomainException("The payment value must be greater than zero.");
         if (request.ServiceOrderId == Guid.Empty)
             throw new DomainException("The payment must be linked to a service order.");
@@ -51,8 +56,9 @@ public class PaymentAppService(
         var open = existing.FirstOrDefault(p => p.IsOpenAt(now, gateway.CheckoutLifetime));
         if (open is not null)
         {
-            if (open.TotalAmount != request.Value)
+            if (open.TotalAmount != amount)
                 throw new ConcurrencyConflictException("This service order already has an open payment with a different value.");
+
             return new CreatePaymentOutcome(ToDto(open), false);
         }
 
@@ -60,11 +66,11 @@ public class PaymentAppService(
 
         var paymentId = Guid.NewGuid();
         var charge = await gateway.CreateChargeAsync(
-            new ChargeRequest(paymentId, request.ServiceOrderId, request.Value, now.Add(gateway.CheckoutLifetime)),
+            new ChargeRequest(paymentId, request.ServiceOrderId, amount, now.Add(gateway.CheckoutLifetime)),
             cancellationToken);
 
         var payment = PaymentTransaction.Create(
-            paymentId, request.ServiceOrderId, request.Value, charge.GatewayTransactionId, charge.PaymentUrl, now);
+            paymentId, request.ServiceOrderId, amount, charge.GatewayTransactionId, charge.PaymentUrl, now);
         var latest = existing.OrderByDescending(p => p.CreatedAt).FirstOrDefault();
 
         await store.CommitAsync(
@@ -187,5 +193,5 @@ public class PaymentAppService(
     }
 
     private static PaymentCreatedDto ToDto(PaymentTransaction payment) =>
-        new(payment.PaymentUrl, payment.Status, payment.TotalAmount);
+        new(payment.PaymentUrl, payment.Status, payment.TotalAmount, payment.GatewayTransactionId);
 }

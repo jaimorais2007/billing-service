@@ -87,7 +87,7 @@ public class ApiIntegrationTests(BillingApiFactory factory) : IClassFixture<Bill
 
     private async Task<Guid> CreatePaymentAsync()
     {
-        var response = await _client.PostAsJsonAsync("/api/Payments", new CreatePaymentRequest(250m, Guid.NewGuid(), null, null));
+        var response = await _client.PostAsJsonAsync("/api/Payments", new CreatePaymentRequest(Guid.NewGuid(), 250m, null, null, null));
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
         return factory.Gateway.Charges[^1].PaymentId;
     }
@@ -209,11 +209,11 @@ public class ApiIntegrationTests(BillingApiFactory factory) : IClassFixture<Bill
         var part = await CreatePartAsync();
 
         var response = await _client.PostAsJsonAsync("/api/Payments",
-            new CreatePaymentRequest(250m, Guid.NewGuid(), [service.Id], [new PaymentPartRequest(part.Id, 2)]));
+            new CreatePaymentRequest(Guid.NewGuid(), 250m, null, [service.Id], [new PaymentPartRequest(part.Id, 2)]));
 
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
         var body = await ReadJsonAsync(response);
-        AssertFields(body, "paymentUrl", "status", "totalAmount");
+        AssertFields(body, "paymentUrl", "status", "totalAmount", "transactionId");
         Assert.Equal("Pending", body.GetProperty("status").GetString());
         Assert.Equal(250m, body.GetProperty("totalAmount").GetDecimal());
     }
@@ -222,23 +222,38 @@ public class ApiIntegrationTests(BillingApiFactory factory) : IClassFixture<Bill
     public async Task CreatePayment_WithOpenPayment_ShouldReturn200OrConflict()
     {
         var orderId = Guid.NewGuid();
-        var first = await _client.PostAsJsonAsync("/api/Payments", new CreatePaymentRequest(250m, orderId, null, null));
+        var first = await _client.PostAsJsonAsync("/api/Payments", new CreatePaymentRequest(orderId, 250m, null, null, null));
         Assert.Equal(HttpStatusCode.Created, first.StatusCode);
 
-        var again = await _client.PostAsJsonAsync("/api/Payments", new CreatePaymentRequest(250m, orderId, null, null));
+        var again = await _client.PostAsJsonAsync("/api/Payments", new CreatePaymentRequest(orderId, 250m, null, null, null));
         Assert.Equal(HttpStatusCode.OK, again.StatusCode);
         Assert.Equal((await ReadJsonAsync(first)).GetProperty("paymentUrl").GetString(),
             (await ReadJsonAsync(again)).GetProperty("paymentUrl").GetString());
 
-        var different = await _client.PostAsJsonAsync("/api/Payments", new CreatePaymentRequest(99m, orderId, null, null));
+        var different = await _client.PostAsJsonAsync("/api/Payments", new CreatePaymentRequest(orderId, 99m, null, null, null));
         Assert.Equal(HttpStatusCode.Conflict, different.StatusCode);
+    }
+
+    [Fact]
+    public async Task CreatePayment_FromOsServiceWithTotalAmount_ShouldReturn201WithPaymentUrlAndTransactionId()
+    {
+        var orderId = Guid.NewGuid();
+
+        var response = await _client.PostAsJsonAsync("/api/Payments", new { serviceOrderId = orderId, totalAmount = 180m });
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var body = await ReadJsonAsync(response);
+        var charge = factory.Gateway.Charges.Single(c => c.ServiceOrderId == orderId);
+        Assert.Equal($"https://mp.test/{charge.PaymentId:N}", body.GetProperty("paymentUrl").GetString());
+        Assert.Equal($"pref-{charge.PaymentId:N}", body.GetProperty("transactionId").GetString());
+        Assert.Equal(180m, body.GetProperty("totalAmount").GetDecimal());
     }
 
     [Fact]
     public async Task CreatePayment_WithInvalidItem_ShouldReturn400()
     {
         var response = await _client.PostAsJsonAsync("/api/Payments",
-            new CreatePaymentRequest(250m, Guid.NewGuid(), [Guid.NewGuid()], null));
+            new CreatePaymentRequest(Guid.NewGuid(), 250m, null, [Guid.NewGuid()], null));
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Equal("Invalid or inactive part or service.", (await ReadJsonAsync(response)).GetProperty("error").GetString());
@@ -255,7 +270,7 @@ public class ApiIntegrationTests(BillingApiFactory factory) : IClassFixture<Bill
             services.AddSingleton(gateway.Object);
         })).CreateClient();
 
-        var response = await failing.PostAsJsonAsync("/api/Payments", new CreatePaymentRequest(250m, Guid.NewGuid(), null, null));
+        var response = await failing.PostAsJsonAsync("/api/Payments", new CreatePaymentRequest(Guid.NewGuid(), 250m, null, null, null));
 
         Assert.Equal(HttpStatusCode.BadGateway, response.StatusCode);
     }

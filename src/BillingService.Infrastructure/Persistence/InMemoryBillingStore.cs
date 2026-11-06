@@ -13,6 +13,7 @@ public class InMemoryBillingStore : IBillingStore, IOutboxStore
     private readonly object _lock = new();
     private readonly Dictionary<(string Partition, Guid Id), Dictionary<string, AttributeValue>> _items = [];
     private readonly Dictionary<Guid, Guid> _activePayments = [];
+    private readonly HashSet<Guid> _processed = [];
     private readonly List<OutboxMessage> _outbox = [];
 
     public Task<IReadOnlyList<Service>> ListServicesAsync(CancellationToken cancellationToken) =>
@@ -36,6 +37,14 @@ public class InMemoryBillingStore : IBillingStore, IOutboxStore
             .Where(p => serviceOrderId is null || p.ServiceOrderId == serviceOrderId)
             .ToList());
 
+    public Task<bool> IsEventProcessedAsync(Guid eventId, CancellationToken cancellationToken)
+    {
+        lock (_lock)
+        {
+            return Task.FromResult(_processed.Contains(eventId));
+        }
+    }
+
     public Task CommitAsync(BillingChanges changes, CancellationToken cancellationToken)
     {
         lock (_lock)
@@ -46,7 +55,8 @@ public class InMemoryBillingStore : IBillingStore, IOutboxStore
                 || changes.Payments.Any(p => CurrentVersion(PaymentPartition, p.Id) != p.Version)
                 || (changes.Claim is { } claim
                     && _activePayments.TryGetValue(claim.ServiceOrderId, out var active)
-                    && active != claim.ExpectedActivePaymentId);
+                    && active != claim.ExpectedActivePaymentId)
+                || (changes.ProcessedEvent is { } processed && _processed.Contains(processed.EventId));
 
             if (conflict)
                 throw new ConcurrencyConflictException("The record was changed by another operation. Please try again.");
@@ -60,6 +70,8 @@ public class InMemoryBillingStore : IBillingStore, IOutboxStore
 
             if (changes.Claim is { } newClaim)
                 _activePayments[newClaim.ServiceOrderId] = newClaim.NewActivePaymentId;
+            if (changes.ProcessedEvent is { } newProcessed)
+                _processed.Add(newProcessed.EventId);
 
             _outbox.AddRange(changes.Outbox);
         }

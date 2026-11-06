@@ -1,4 +1,5 @@
 using BillingService.Application.Catalog;
+using BillingService.Application.Messaging;
 using BillingService.Application.Payments;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -12,6 +13,7 @@ public static class DependencyInjection
         services.AddScoped<ServiceCatalogAppService>();
         services.AddScoped<PartAppService>();
         services.AddScoped<PaymentAppService>();
+        services.AddScoped<IIntegrationEventHandler, ServiceOrderApprovedHandler>();
         return services;
     }
 }

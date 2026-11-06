@@ -255,6 +255,34 @@ public class DynamoDbBillingStoreTests
     }
 
     [Fact]
+    public async Task Commit_ProcessedEvent_ShouldBeConditionalWithTtl()
+    {
+        var request = CaptureCommit();
+        var envelope = new EventEnvelope(Guid.NewGuid(), EventTypes.ServiceOrderApproved, TestData.Now, Guid.NewGuid(),
+            System.Text.Json.JsonSerializer.SerializeToElement(new { }));
+
+        await Store.CommitAsync(new BillingChanges().MarkProcessed(envelope), CancellationToken.None);
+
+        var put = Assert.Single(request.TransactItems).Put;
+        Assert.Equal($"EVENT#{envelope.EventId:D}", put.Item["pk"].S);
+        Assert.Equal("PROCESSED", put.Item["sk"].S);
+        Assert.Equal(EventTypes.ServiceOrderApproved, put.Item["eventType"].S);
+        Assert.Equal("attribute_not_exists(pk)", put.ConditionExpression);
+        Assert.True(long.Parse(put.Item["ttl"].N) > DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+    }
+
+    [Fact]
+    public async Task IsEventProcessed_ShouldReflectItemExistence()
+    {
+        _dynamo.SetupSequence(x => x.GetItemAsync(It.IsAny<GetItemRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new GetItemResponse { Item = new Dictionary<string, AttributeValue> { ["pk"] = new() { S = "x" } } })
+            .ReturnsAsync(new GetItemResponse { Item = [] });
+
+        Assert.True(await Store.IsEventProcessedAsync(Guid.NewGuid(), CancellationToken.None));
+        Assert.False(await Store.IsEventProcessedAsync(Guid.NewGuid(), CancellationToken.None));
+    }
+
+    [Fact]
     public async Task Gets_WhenMissing_ShouldReturnNull()
     {
         ReturnItem(null);

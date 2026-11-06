@@ -45,6 +45,12 @@ spec:
                   name: billing-service-secret
                   key: DYNAMODB_TABLE
                   optional: true
+            - name: AWS__SqsQueueUrl
+              valueFrom:
+                secretKeyRef:
+                  name: billing-service-secret
+                  key: SQS_QUEUE_URL
+                  optional: true
             - name: AWS__SnsTopicArnPrefix
               value: arn:aws:sns:us-east-1:168126498555:oficina
             - name: MercadoPago__AccessToken

@@ -78,6 +78,15 @@ public class Part : VersionedEntity
         QuantityInStock -= quantity;
     }
 
+    public bool TryDebitForServiceOrder(int quantity)
+    {
+        if (quantity <= 0 || QuantityInStock < quantity)
+            return false;
+
+        QuantityInStock -= quantity;
+        return true;
+    }
+
     public void SoftDelete() => Inactive = true;
 
     private static void Validate(string name, string code, decimal price)

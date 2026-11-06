@@ -22,12 +22,29 @@ Feito em **.NET 8**, com Clean Architecture, **DynamoDB** e eventos publicados n
 | Deletar peça | `DELETE /api/Parts/{id}` | 204, exclusão lógica + evento `PartDeleted` | 404 |
 | Adicionar estoque | `POST /api/Parts/{id}/add-stock` (Quantity) | 204 + evento `PartStockAdded` (PartId, AvailableQuantity) | 404, 400 |
 | Retirar estoque | `POST /api/Parts/{id}/remove-stock` (Quantity) | 204 | 404, 400 |
-| Criar pedido de pagamento | `POST /api/Payments` (Value, ServiceOrderId, ServiceIds, Parts[PartId, Quantity]) | 201 (PaymentUrl, Status, TotalAmount); 200 se já houver checkout aberto com o mesmo valor | 400, 409, 502 |
+| Criar pedido de pagamento | `POST /api/Payments` (ServiceOrderId, Value ou TotalAmount, ServiceIds, Parts[PartId, Quantity]) | 201 (PaymentUrl, Status, TotalAmount, TransactionId); 200 se já houver checkout aberto com o mesmo valor | 400, 409, 502 |
+| Baixar estoque da OS aprovada | Evento `ServiceOrderApproved` (ServiceOrderId, Parts[PartId, Quantity]) | `PartStockEnsured` (ServiceOrderId, PartId, Quantity) por peça baixada | |
 | Receber webhook do pagamento | `POST /api/webhooks/mercadopago` | 200 + `PaymentConfirmed` ou `PaymentExpired` | 404, 401 |
 
 * Serviços e peças excluídos (inativos) não aparecem na busca nem na listagem e respondem 404.
 * O código da peça é único entre as peças ativas.
 * No pedido de pagamento, o valor precisa ser positivo e todos os serviços e peças informados precisam existir e estar ativos. Caso contrário, a resposta é 400 (`Invalid or inactive part or service.`). Se o Mercado Pago falhar, a resposta é 502.
+
+### Integração com o OS Service
+
+Segue o desenho da arquitetura v2 (Excalidraw do grupo):
+
+* **Consultas síncronas:** o OS Service chama `GET /api/Service`, `GET /api/Parts`, `GET /api/Service/{id}` e `GET /api/Parts/{id}` para validar itens e obter o preço vigente.
+* **Aceitar orçamento:** o OS Service chama `POST /api/Payments` com `ServiceOrderId` e `TotalAmount` e recebe `201 (PaymentUrl, TransactionId)`. O mesmo endpoint atende o caso de uso pelo API Gateway com `Value`, `ServiceIds` e `Parts`. `TransactionId` é o `GatewayTransactionId` (id da preferência no Mercado Pago), o mesmo enviado depois no `PaymentConfirmed`.
+* **Pagamento confirmado:** o OS Service consome `PaymentConfirmed`, coloca a OS em execução e publica `ServiceOrderApproved` (ServiceOrderId, Parts[PartId, Quantity]).
+
+### Baixa de estoque da OS aprovada
+
+1. O billing consome `ServiceOrderApproved` na fila `oficina-billing-events`.
+2. Para cada peça com saldo suficiente, baixa `QuantityInStock` e publica `PartStockEnsured` (ServiceOrderId, PartId, Quantity). O OS Service usa esse evento para marcar `StockQuantityWasEnsured = true` no `ServiceOrderPart`.
+3. Peças sem saldo (ou inexistentes) ficam pendentes: nada é baixado nem publicado para elas. A peça inativa ainda tem estoque físico, então é baixada normalmente.
+4. A baixa, os eventos e o registro da mensagem processada (`EVENT#<eventId>`) são gravados na mesma transação. Mensagens repetidas são ignoradas, e conflitos de versão fazem a mensagem voltar para a fila.
+5. Quando o estoque de uma peça aumenta, o billing publica `PartStockAdded` (PartId, AvailableQuantity). Para tentar de novo as peças pendentes, o OS Service publica um novo `ServiceOrderApproved` contendo **somente** as peças ainda não garantidas.
 
 ### Um pagamento por OS e expiração do checkout
 
@@ -60,7 +77,7 @@ Tabela única `oficina-billing` no DynamoDB (criada em `infra-terraform/dynamodb
 * `status`: `Pending`, `Paid`, `Refused`, `Cancelled` ou `Refunded`.
 * `gatewayTransactionId` guarda o id da preferência criada no Mercado Pago e alimenta o GSI `by-gateway-transaction`.
 * Cada item tem `version` para concorrência otimista. Um conflito devolve 409.
-* Itens técnicos: `OUTBOX` / `<occurredAt>#<eventId>`, com os eventos ainda não publicados no SNS, e `ORDER#<osId>` / `ACTIVE_PAYMENT`, a trava de pagamento por OS.
+* Itens técnicos: `OUTBOX` / `<occurredAt>#<eventId>` (eventos ainda não publicados no SNS), `ORDER#<osId>` / `ACTIVE_PAYMENT` (trava de pagamento por OS) e `EVENT#<eventId>` / `PROCESSED` (mensagens já processadas, com `ttl` de 30 dias).
 
 ---
 
@@ -70,6 +87,7 @@ Tópicos `arn:aws:sns:us-east-1:168126498555:oficina-<Evento>`. O envelope é o 
 
 | Evento | Payload |
 |---|---|
+| `PartStockEnsured` | `serviceOrderId`, `partId`, `quantity` |
 | `ServiceDeleted` | `serviceId` |
 | `PartDeleted` | `partId` |
 | `PartStockAdded` | `partId`, `availableQuantity` |
@@ -77,6 +95,8 @@ Tópicos `arn:aws:sns:us-east-1:168126498555:oficina-<Evento>`. O envelope é o 
 | `PaymentExpired` | `serviceOrderId`, `gatewayTransactionId` |
 
 O evento é gravado na mesma transação da mudança de estado e publicado em segundo plano, sem limite de tentativas.
+
+Evento consumido (fila `oficina-billing-events`): `ServiceOrderApproved`, publicado pelo OS Service.
 
 ---
 
@@ -88,10 +108,11 @@ Secret `billing-service-secret` no namespace `oficina`:
 |---|---|
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | Usuário IAM `oficina-billing-service` |
 | `DYNAMODB_TABLE` | `oficina-billing` |
+| `SQS_QUEUE_URL` | URL da fila `oficina-billing-events` |
 | `MERCADOPAGO_ACCESS_TOKEN` | Access token da aplicação no Mercado Pago |
 | `MERCADOPAGO_WEBHOOK_SECRET` | Assinatura secreta, em Suas integrações > Webhooks |
 
-Fora de `Development`, o serviço **não sobe** sem a tabela. Sem as chaves do Mercado Pago ele sobe, mas o pedido de pagamento devolve 502 e o webhook devolve 401.
+Fora de `Development`, o serviço **não sobe** sem a tabela e a fila. Sem as chaves do Mercado Pago ele sobe, mas o pedido de pagamento devolve 502 e o webhook devolve 401.
 
 No painel do Mercado Pago, configure a URL `https://kwzh4dl581.execute-api.us-east-1.amazonaws.com/api/webhooks/mercadopago` com o evento **Pagamentos**.
 

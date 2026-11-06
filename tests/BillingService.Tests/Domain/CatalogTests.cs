@@ -115,6 +115,18 @@ public class PartTests
         Assert.Equal("Insufficient stock or invalid quantity.", ex.Message);
     }
 
+    [Theory]
+    [InlineData(3, true, 0)]
+    [InlineData(4, false, 3)]
+    [InlineData(0, false, 3)]
+    public void TryDebitForServiceOrder_ShouldDebitOnlyWithEnoughStock(int quantity, bool expected, int remaining)
+    {
+        var part = TestData.NewPart(stock: 3);
+
+        Assert.Equal(expected, part.TryDebitForServiceOrder(quantity));
+        Assert.Equal(remaining, part.QuantityInStock);
+    }
+
     [Fact]
     public void SoftDelete_ShouldInactivate()
     {

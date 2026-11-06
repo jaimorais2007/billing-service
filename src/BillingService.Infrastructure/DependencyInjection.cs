@@ -1,6 +1,7 @@
 using Amazon;
 using Amazon.DynamoDBv2;
 using Amazon.SimpleNotificationService;
+using Amazon.SQS;
 using BillingService.Application.Abstractions;
 using BillingService.Infrastructure.MercadoPago;
 using BillingService.Infrastructure.Messaging;
@@ -49,6 +50,7 @@ public static class DependencyInjection
 
         services.AddHostedService<OutboxPublisherBackgroundService>();
         services.AddHostedService<PaymentExpirationBackgroundService>();
+        services.AddHostedService<SqsConsumerBackgroundService>();
 
         return services;
     }
@@ -58,10 +60,14 @@ public static class DependencyInjection
         var topicArnPrefix = configuration["AWS:SnsTopicArnPrefix"];
         if (string.IsNullOrWhiteSpace(topicArnPrefix))
             throw new InvalidOperationException("AWS:SnsTopicArnPrefix is not configured.");
+        if (string.IsNullOrWhiteSpace(configuration["AWS:SqsQueueUrl"]))
+            throw new InvalidOperationException(
+                "AWS:SqsQueueUrl is not configured (SQS_QUEUE_URL key in billing-service-secret).");
 
         var region = RegionEndpoint.GetBySystemName(configuration["AWS:Region"] ?? "us-east-1");
 
         services.AddSingleton<IAmazonDynamoDB>(_ => new AmazonDynamoDBClient(region));
+        services.AddSingleton<IAmazonSQS>(_ => new AmazonSQSClient(region));
         services.AddSingleton<IAmazonSimpleNotificationService>(_ => new AmazonSimpleNotificationServiceClient(region));
 
         services.AddSingleton(sp => new DynamoDbBillingStore(sp.GetRequiredService<IAmazonDynamoDB>(), table));

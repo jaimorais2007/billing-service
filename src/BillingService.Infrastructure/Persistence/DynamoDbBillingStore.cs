@@ -14,6 +14,9 @@ public class DynamoDbBillingStore(IAmazonDynamoDB dynamo, string tableName) : IB
 {
     private const string OutboxPartition = "OUTBOX";
     private const string ActivePaymentSortKey = "ACTIVE_PAYMENT";
+    private const string ProcessedSortKey = "PROCESSED";
+
+    private static readonly TimeSpan ProcessedEventRetention = TimeSpan.FromDays(30);
 
     public async Task<IReadOnlyList<Service>> ListServicesAsync(CancellationToken cancellationToken) =>
         (await QueryPartitionAsync(ServicePartition, cancellationToken)).Select(ToService).ToList();
@@ -51,6 +54,18 @@ public class DynamoDbBillingStore(IAmazonDynamoDB dynamo, string tableName) : IB
         return (await QueryAllAsync(request, cancellationToken)).Select(ToPayment).ToList();
     }
 
+    public async Task<bool> IsEventProcessedAsync(Guid eventId, CancellationToken cancellationToken)
+    {
+        var response = await dynamo.GetItemAsync(new GetItemRequest
+        {
+            TableName = tableName,
+            ConsistentRead = true,
+            Key = Key(EventPartition(eventId), ProcessedSortKey)
+        }, cancellationToken);
+
+        return response.Item is { Count: > 0 };
+    }
+
     public async Task CommitAsync(BillingChanges changes, CancellationToken cancellationToken)
     {
         var writes = new List<TransactWriteItem>();
@@ -60,6 +75,8 @@ public class DynamoDbBillingStore(IAmazonDynamoDB dynamo, string tableName) : IB
         writes.AddRange(changes.Outbox.Select(m => new TransactWriteItem { Put = new Put { TableName = tableName, Item = ToOutboxItem(m) } }));
         if (changes.Claim is { } claim)
             writes.Add(ClaimWrite(claim));
+        if (changes.ProcessedEvent is { } processed)
+            writes.Add(ProcessedWrite(processed));
 
         if (writes.Count == 0)
             return;
@@ -140,6 +157,21 @@ public class DynamoDbBillingStore(IAmazonDynamoDB dynamo, string tableName) : IB
 
         return response.Item is { Count: > 0 } item ? item : null;
     }
+
+    private TransactWriteItem ProcessedWrite(EventEnvelope processed) => new()
+    {
+        Put = new Put
+        {
+            TableName = tableName,
+            ConditionExpression = "attribute_not_exists(pk)",
+            Item = new Dictionary<string, AttributeValue>(Key(EventPartition(processed.EventId), ProcessedSortKey))
+            {
+                ["entityType"] = S("ProcessedEvent"),
+                ["eventType"] = S(processed.EventType),
+                ["ttl"] = N(DateTimeOffset.UtcNow.Add(ProcessedEventRetention).ToUnixTimeSeconds())
+            }
+        }
+    };
 
     private TransactWriteItem ClaimWrite(OrderPaymentClaim claim)
     {
@@ -230,6 +262,8 @@ public class DynamoDbBillingStore(IAmazonDynamoDB dynamo, string tableName) : IB
         ["pk"] = S(pk),
         ["sk"] = S(sk)
     };
+
+    private static string EventPartition(Guid eventId) => $"EVENT#{eventId:D}";
 
     private static bool IsConflict(CancellationReason reason) =>
         reason.Code is "ConditionalCheckFailed" or "TransactionConflict";

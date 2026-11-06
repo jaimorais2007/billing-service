@@ -32,7 +32,7 @@ public class PaymentFlowTests
 
     private async Task<PaymentTransaction> CreatePaymentAsync(Guid? orderId = null)
     {
-        await Service.CreateAsync(new CreatePaymentRequest(Value, orderId ?? Guid.NewGuid(), null, null), _ct);
+        await Service.CreateAsync(new CreatePaymentRequest(orderId ?? Guid.NewGuid(), Value, null, null, null), _ct);
         return (await _store.GetPaymentAsync(_gateway.Charges[^1].PaymentId, _ct))!;
     }
 
@@ -46,7 +46,7 @@ public class PaymentFlowTests
         var (service, part) = await SeedCatalogAsync();
 
         var outcome = await Service.CreateAsync(
-            new CreatePaymentRequest(Value, orderId, [service.Id], [new PaymentPartRequest(part.Id, 2)]), _ct);
+            new CreatePaymentRequest(orderId, Value, null, [service.Id], [new PaymentPartRequest(part.Id, 2)]), _ct);
         var created = outcome.Payment;
 
         Assert.True(outcome.Created);
@@ -54,7 +54,7 @@ public class PaymentFlowTests
         Assert.Equal(orderId, charge.ServiceOrderId);
         Assert.Equal(Value, charge.TotalAmount);
         Assert.Equal(TestData.Now.AddHours(1), charge.ExpiresAt);
-        Assert.Equal(new PaymentCreatedDto($"https://mp.test/{charge.PaymentId:N}", PaymentStatus.Pending, Value), created);
+        Assert.Equal(new PaymentCreatedDto($"https://mp.test/{charge.PaymentId:N}", PaymentStatus.Pending, Value, $"pref-{charge.PaymentId:N}"), created);
 
         var stored = (await _store.GetPaymentAsync(charge.PaymentId, _ct))!;
         Assert.Equal(orderId, stored.ServiceOrderId);
@@ -64,12 +64,41 @@ public class PaymentFlowTests
     }
 
     [Fact]
+    public async Task Create_FromOsServiceWithTotalAmount_ShouldReturnPaymentUrlAndTransactionId()
+    {
+        var orderId = Guid.NewGuid();
+
+        var outcome = await Service.CreateAsync(new CreatePaymentRequest(orderId, TotalAmount: Value), _ct);
+
+        var charge = Assert.Single(_gateway.Charges);
+        Assert.True(outcome.Created);
+        Assert.Equal(Value, charge.TotalAmount);
+        Assert.Equal($"https://mp.test/{charge.PaymentId:N}", outcome.Payment.PaymentUrl);
+        Assert.Equal($"pref-{charge.PaymentId:N}", outcome.Payment.TransactionId);
+    }
+
+    [Theory]
+    [InlineData(10, 20)]
+    [InlineData(null, null)]
+    public async Task Create_WithDivergentOrMissingValue_ShouldThrow(int? value, int? totalAmount) =>
+        await Assert.ThrowsAsync<DomainException>(() =>
+            Service.CreateAsync(new CreatePaymentRequest(Guid.NewGuid(), value, totalAmount), _ct));
+
+    [Fact]
+    public async Task Create_WithSameValueAndTotalAmount_ShouldAccept()
+    {
+        var outcome = await Service.CreateAsync(new CreatePaymentRequest(Guid.NewGuid(), Value, Value), _ct);
+
+        Assert.True(outcome.Created);
+    }
+
+    [Fact]
     public async Task Create_WithOpenPayment_ShouldReuseItWithoutNewCharge()
     {
         var orderId = Guid.NewGuid();
         var first = await CreatePaymentAsync(orderId);
 
-        var second = await Service.CreateAsync(new CreatePaymentRequest(Value, orderId, null, null), _ct);
+        var second = await Service.CreateAsync(new CreatePaymentRequest(orderId, Value, null, null, null), _ct);
 
         Assert.False(second.Created);
         Assert.Equal(first.PaymentUrl, second.Payment.PaymentUrl);
@@ -83,7 +112,7 @@ public class PaymentFlowTests
         await CreatePaymentAsync(orderId);
 
         await Assert.ThrowsAsync<ConcurrencyConflictException>(() =>
-            Service.CreateAsync(new CreatePaymentRequest(1m, orderId, null, null), _ct));
+            Service.CreateAsync(new CreatePaymentRequest(orderId, 1m, null, null, null), _ct));
     }
 
     [Fact]
@@ -93,7 +122,7 @@ public class PaymentFlowTests
         await CreatePaymentAsync(orderId);
         _clock.Now = _clock.Now.AddHours(2);
 
-        var second = await Service.CreateAsync(new CreatePaymentRequest(Value, orderId, null, null), _ct);
+        var second = await Service.CreateAsync(new CreatePaymentRequest(orderId, Value, null, null, null), _ct);
 
         Assert.True(second.Created);
         Assert.Equal(2, _gateway.Charges.Count);
@@ -107,7 +136,7 @@ public class PaymentFlowTests
         Transaction(payment, "1", "approved");
         await Service.HandleGatewayNotificationAsync("1", _ct);
 
-        await Assert.ThrowsAsync<DomainException>(() => Service.CreateAsync(new CreatePaymentRequest(Value, orderId, null, null), _ct));
+        await Assert.ThrowsAsync<DomainException>(() => Service.CreateAsync(new CreatePaymentRequest(orderId, Value, null, null, null), _ct));
     }
 
     [Fact]
@@ -128,12 +157,12 @@ public class PaymentFlowTests
     [InlineData(-1)]
     public async Task Create_WithNonPositiveValue_ShouldThrow(int value) =>
         await Assert.ThrowsAsync<DomainException>(() =>
-            Service.CreateAsync(new CreatePaymentRequest(value, Guid.NewGuid(), null, null), _ct));
+            Service.CreateAsync(new CreatePaymentRequest(Guid.NewGuid(), value, null, null, null), _ct));
 
     [Fact]
     public async Task Create_WithoutServiceOrder_ShouldThrow() =>
         await Assert.ThrowsAsync<DomainException>(() =>
-            Service.CreateAsync(new CreatePaymentRequest(Value, Guid.Empty, null, null), _ct));
+            Service.CreateAsync(new CreatePaymentRequest(Guid.Empty, Value, null, null, null), _ct));
 
     [Fact]
     public async Task Create_WithMissingOrInactiveItems_ShouldThrowWithoutCharging()
@@ -147,11 +176,11 @@ public class PaymentFlowTests
 
         var invalid = new[]
         {
-            new CreatePaymentRequest(Value, Guid.NewGuid(), [Guid.NewGuid()], null),
-            new CreatePaymentRequest(Value, Guid.NewGuid(), [inactiveService.Id], null),
-            new CreatePaymentRequest(Value, Guid.NewGuid(), [service.Id], [new PaymentPartRequest(Guid.NewGuid(), 1)]),
-            new CreatePaymentRequest(Value, Guid.NewGuid(), null, [new PaymentPartRequest(inactivePart.Id, 1)]),
-            new CreatePaymentRequest(Value, Guid.NewGuid(), null, [new PaymentPartRequest(part.Id, 0)])
+            new CreatePaymentRequest(Guid.NewGuid(), Value, null, [Guid.NewGuid()], null),
+            new CreatePaymentRequest(Guid.NewGuid(), Value, null, [inactiveService.Id], null),
+            new CreatePaymentRequest(Guid.NewGuid(), Value, null, [service.Id], [new PaymentPartRequest(Guid.NewGuid(), 1)]),
+            new CreatePaymentRequest(Guid.NewGuid(), Value, null, null, [new PaymentPartRequest(inactivePart.Id, 1)]),
+            new CreatePaymentRequest(Guid.NewGuid(), Value, null, null, [new PaymentPartRequest(part.Id, 0)])
         };
 
         foreach (var request in invalid)
@@ -169,7 +198,7 @@ public class PaymentFlowTests
         _gateway.ChargeFailure = new PaymentGatewayException("down");
 
         await Assert.ThrowsAsync<PaymentGatewayException>(() =>
-            Service.CreateAsync(new CreatePaymentRequest(Value, Guid.NewGuid(), null, null), _ct));
+            Service.CreateAsync(new CreatePaymentRequest(Guid.NewGuid(), Value, null, null, null), _ct));
 
         Assert.Empty(await TestData.PendingEventsAsync(_store));
     }

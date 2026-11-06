@@ -18,9 +18,17 @@ public sealed class BillingChanges
     public IReadOnlyList<OutboxMessage> Outbox => _outbox;
 
     public OrderPaymentClaim? Claim { get; private set; }
+    public EventEnvelope? ProcessedEvent { get; private set; }
 
     public bool HasChanges =>
-        _services.Count > 0 || _parts.Count > 0 || _payments.Count > 0 || _outbox.Count > 0 || Claim is not null;
+        _services.Count > 0 || _parts.Count > 0 || _payments.Count > 0 || _outbox.Count > 0
+        || Claim is not null || ProcessedEvent is not null;
+
+    public BillingChanges MarkProcessed(EventEnvelope envelope)
+    {
+        ProcessedEvent = envelope;
+        return this;
+    }
 
     public BillingChanges ClaimOrder(Guid serviceOrderId, Guid? expectedActivePaymentId, Guid newActivePaymentId)
     {
@@ -66,6 +74,8 @@ public interface IBillingStore
     Task<PaymentTransaction?> GetPaymentAsync(Guid id, CancellationToken cancellationToken);
 
     Task<IReadOnlyList<PaymentTransaction>> ListPaymentsAsync(Guid? serviceOrderId, CancellationToken cancellationToken);
+
+    Task<bool> IsEventProcessedAsync(Guid eventId, CancellationToken cancellationToken);
 
     Task CommitAsync(BillingChanges changes, CancellationToken cancellationToken);
 }

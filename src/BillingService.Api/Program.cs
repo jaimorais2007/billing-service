@@ -2,6 +2,7 @@ using System.Text.Json.Serialization;
 using BillingService.Api.Filters;
 using BillingService.Application;
 using BillingService.Infrastructure;
+using BillingService.Infrastructure.Messaging;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 
@@ -22,7 +23,7 @@ builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddHealthChecks();
 
-var serviceName = builder.Configuration["OTEL_SERVICE_NAME"] ?? "BillingService";
+var serviceName = builder.Configuration["OTEL_SERVICE_NAME"] ?? SqsConsumerBackgroundService.ActivitySourceName;
 builder.Services.AddOpenTelemetry()
     .ConfigureResource(resource => resource.AddService(serviceName))
     .WithTracing(tracing =>
