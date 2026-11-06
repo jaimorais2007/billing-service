@@ -12,6 +12,7 @@ jobs:
     with:
       service-name: billing-service
       sonar-project-key: jaimorais2007_billing-service
+      deploy: true
     permissions:
       contents: read
       packages: write
