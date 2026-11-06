@@ -1,0 +1,57 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{A37AACA1-0ACC-4DE2-97F0-96151685A8B4}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "BillingService.Api", "src\BillingService.Api\BillingService.Api.csproj", "{21F1ACE9-6CDC-4930-901A-3664BBFE93BA}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{1C35137F-0637-4AB2-A11B-1EA9CA75CB8E}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "BillingService.Tests", "tests\BillingService.Tests\BillingService.Tests.csproj", "{7A783515-E05E-4200-A085-E5481E5E7B22}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "BillingService.Domain", "src\BillingService.Domain\BillingService.Domain.csproj", "{B4660BAC-67C2-4418-9662-713F6CCD00E2}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "BillingService.Application", "src\BillingService.Application\BillingService.Application.csproj", "{E13DC20B-2C10-4FA0-9A10-4D306EE12D5A}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "BillingService.Infrastructure", "src\BillingService.Infrastructure\BillingService.Infrastructure.csproj", "{FF3EDB62-6F93-40CB-82C9-8D887FF2AE01}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{21F1ACE9-6CDC-4930-901A-3664BBFE93BA}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{21F1ACE9-6CDC-4930-901A-3664BBFE93BA}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{21F1ACE9-6CDC-4930-901A-3664BBFE93BA}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{21F1ACE9-6CDC-4930-901A-3664BBFE93BA}.Release|Any CPU.Build.0 = Release|Any CPU
+		{7A783515-E05E-4200-A085-E5481E5E7B22}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7A783515-E05E-4200-A085-E5481E5E7B22}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7A783515-E05E-4200-A085-E5481E5E7B22}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7A783515-E05E-4200-A085-E5481E5E7B22}.Release|Any CPU.Build.0 = Release|Any CPU
+		{B4660BAC-67C2-4418-9662-713F6CCD00E2}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B4660BAC-67C2-4418-9662-713F6CCD00E2}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B4660BAC-67C2-4418-9662-713F6CCD00E2}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B4660BAC-67C2-4418-9662-713F6CCD00E2}.Release|Any CPU.Build.0 = Release|Any CPU
+		{E13DC20B-2C10-4FA0-9A10-4D306EE12D5A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E13DC20B-2C10-4FA0-9A10-4D306EE12D5A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E13DC20B-2C10-4FA0-9A10-4D306EE12D5A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E13DC20B-2C10-4FA0-9A10-4D306EE12D5A}.Release|Any CPU.Build.0 = Release|Any CPU
+		{FF3EDB62-6F93-40CB-82C9-8D887FF2AE01}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{FF3EDB62-6F93-40CB-82C9-8D887FF2AE01}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{FF3EDB62-6F93-40CB-82C9-8D887FF2AE01}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{FF3EDB62-6F93-40CB-82C9-8D887FF2AE01}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{21F1ACE9-6CDC-4930-901A-3664BBFE93BA} = {A37AACA1-0ACC-4DE2-97F0-96151685A8B4}
+		{7A783515-E05E-4200-A085-E5481E5E7B22} = {1C35137F-0637-4AB2-A11B-1EA9CA75CB8E}
+		{B4660BAC-67C2-4418-9662-713F6CCD00E2} = {A37AACA1-0ACC-4DE2-97F0-96151685A8B4}
+		{E13DC20B-2C10-4FA0-9A10-4D306EE12D5A} = {A37AACA1-0ACC-4DE2-97F0-96151685A8B4}
+		{FF3EDB62-6F93-40CB-82C9-8D887FF2AE01} = {A37AACA1-0ACC-4DE2-97F0-96151685A8B4}
+	EndGlobalSection
+EndGlobal
