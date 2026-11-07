@@ -145,3 +145,11 @@ Para validar as transações contra um DynamoDB de verdade, suba o DynamoDB Loca
 docker run -d -p 8000:8000 amazon/dynamodb-local
 DYNAMODB_LOCAL_URL=http://localhost:8000 dotnet test
 ```
+
+
+## Observabilidade (OpenTelemetry + New Relic)
+
+Traces, metricas e logs sao exportados via OTLP para o New Relic (`https://otlp.nr-data.net`).
+Configuracao em `Configuration/OpenTelemetryConfiguration.cs`; variaveis `OTEL_*` definidas em `k8s/deployment.yaml`.
+A license key vem do secret `billing-service-secret`, chave `OTEL_EXPORTER_OTLP_HEADERS` (formato `api-key=<LICENSE_KEY>`).
+O exporter so e ativado quando `OTEL_EXPORTER_OTLP_ENDPOINT` esta definido.

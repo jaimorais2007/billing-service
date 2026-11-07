@@ -3,8 +3,7 @@ using BillingService.Api.Filters;
 using BillingService.Application;
 using BillingService.Infrastructure;
 using BillingService.Infrastructure.Messaging;
-using OpenTelemetry.Resources;
-using OpenTelemetry.Trace;
+using BillingService.Api.Configuration;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -23,24 +22,8 @@ builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddHealthChecks();
 
-var serviceName = builder.Configuration["OTEL_SERVICE_NAME"] ?? SqsConsumerBackgroundService.ActivitySourceName;
-builder.Services.AddOpenTelemetry()
-    .ConfigureResource(resource => resource.AddService(serviceName))
-    .WithTracing(tracing =>
-    {
-        tracing
-            .AddSource(serviceName)
-            .AddAspNetCoreInstrumentation(opts =>
-            {
-                opts.Filter = httpContext => !httpContext.Request.Path.StartsWithSegments("/health");
-                opts.RecordException = true;
-            });
-
-        if (!string.IsNullOrWhiteSpace(builder.Configuration["OTEL_EXPORTER_OTLP_ENDPOINT"]))
-        {
-            tracing.AddOtlpExporter();
-        }
-    });
+builder.Services.AddOTelConfiguration(builder.Configuration);
+builder.Logging.AddOTelLogging();
 
 var app = builder.Build();
 
