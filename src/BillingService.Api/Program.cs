@@ -19,7 +19,10 @@ builder.Services.AddControllers(options =>
 });
 
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
+builder.Services.AddSwaggerGen(options => options.AddJwtSecurity());
+
+// Exige o JWT da Lambda de autenticação em todas as rotas (exceto /health e o webhook)
+builder.Services.AddJwtAuthentication();
 builder.Services.AddHealthChecks();
 
 builder.Services.AddOTelConfiguration(builder.Configuration);
@@ -30,7 +33,10 @@ var app = builder.Build();
 app.UseSwagger();
 app.UseSwaggerUI();
 
-app.MapHealthChecks("/health");
+app.UseAuthentication();
+app.UseAuthorization();
+
+app.MapHealthChecks("/health").AllowAnonymous();
 app.MapControllers();
 
 await app.RunAsync();

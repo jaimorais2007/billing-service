@@ -35,6 +35,7 @@ public class BillingApiFactory : WebApplicationFactory<Program>
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseSetting("MercadoPago:WebhookSecret", WebhookSecret);
+        builder.UseSetting("Jwt:Secret", TestJwt.Secret);
         builder.ConfigureTestServices(services =>
         {
             services.AddSingleton<IPaymentGateway>(Gateway);
@@ -49,7 +50,7 @@ public class ApiIntegrationTests(BillingApiFactory factory) : IClassFixture<Bill
         Converters = { new JsonStringEnumConverter() }
     };
 
-    private readonly HttpClient _client = factory.CreateClient();
+    private readonly HttpClient _client = TestJwt.Authorize(factory.CreateClient());
 
     private static string Sign(string dataId, string ts = "10")
     {
@@ -269,6 +270,7 @@ public class ApiIntegrationTests(BillingApiFactory factory) : IClassFixture<Bill
                 .ThrowsAsync(new PaymentGatewayException("down"));
             services.AddSingleton(gateway.Object);
         })).CreateClient();
+        TestJwt.Authorize(failing);
 
         var response = await failing.PostAsJsonAsync("/api/Payments", new CreatePaymentRequest(Guid.NewGuid(), 250m, null, null, null));
 

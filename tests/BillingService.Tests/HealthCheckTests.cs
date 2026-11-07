@@ -1,13 +1,13 @@
 using System.Net;
-using Microsoft.AspNetCore.Mvc.Testing;
+using BillingService.Tests.Api;
 
 namespace BillingService.Tests;
 
-public class HealthCheckTests : IClassFixture<WebApplicationFactory<Program>>
+public class HealthCheckTests : IClassFixture<BillingApiFactory>
 {
     private readonly HttpClient _client;
 
-    public HealthCheckTests(WebApplicationFactory<Program> factory)
+    public HealthCheckTests(BillingApiFactory factory)
     {
         _client = factory.CreateClient();
     }

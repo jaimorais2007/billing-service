@@ -41,6 +41,12 @@ spec:
                   name: billing-service-secret
                   key: OTEL_EXPORTER_OTLP_HEADERS
                   optional: true
+            # Chave que valida o JWT da Lambda de autenticação. Obrigatória: sem ela o pod não sobe.
+            - name: Jwt__Secret
+              valueFrom:
+                secretKeyRef:
+                  name: billing-service-secret
+                  key: Jwt__Secret
             - name: ASPNETCORE_ENVIRONMENT
               value: Production
             - name: AWS_ACCESS_KEY_ID

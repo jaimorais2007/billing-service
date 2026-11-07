@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text.Json;
 using BillingService.Application.Abstractions;
 using BillingService.Application.Payments;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.ModelBinding;
 
@@ -12,6 +13,8 @@ public sealed record MercadoPagoNotificationData(JsonElement? Id);
 public sealed record MercadoPagoNotification(string? Type, MercadoPagoNotificationData? Data);
 
 [ApiController]
+// O Mercado Pago não envia JWT: a autenticidade é garantida pela assinatura x-signature.
+[AllowAnonymous]
 [Route("api/webhooks/mercadopago")]
 public class MercadoPagoWebhookController(
     PaymentAppService payments,
