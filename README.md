@@ -32,21 +32,24 @@ Feito em **.NET 8**, com Clean Architecture, **DynamoDB** e eventos publicados n
 * O código da peça é único entre as peças ativas.
 * No pedido de pagamento, o valor precisa ser positivo e todos os serviços e peças informados precisam existir e estar ativos. Caso contrário, a resposta é 400 (`Invalid or inactive part or service.`). Se o Mercado Pago falhar, a resposta é 502.
 
-### Integração com o OS Service
+### Integração Coreografada (Saga Pattern) com o OS Service
 
-Segue o desenho da arquitetura v2 (Excalidraw do grupo):
+Para garantir consistência eventual entre o ciclo da OS (`os-service`) e cobrança/estoque (`billing-service`) sem acoplamento síncrono ou banco compartilhado, os serviços comunicam-se por **Saga Coreografada via SNS + SQS** (com Outbox transacional no DynamoDB):
 
-* **Consultas síncronas:** o OS Service chama `GET /api/Service`, `GET /api/Parts`, `GET /api/Service/{id}` e `GET /api/Parts/{id}` para validar itens e obter o preço vigente.
-* **Aceitar orçamento:** o OS Service chama `POST /api/Payments` com `ServiceOrderId` e `TotalAmount` e recebe `201 (PaymentUrl, TransactionId)`. O mesmo endpoint atende o caso de uso pelo API Gateway com `Value`, `ServiceIds` e `Parts`. `TransactionId` é o `GatewayTransactionId` (id da preferência no Mercado Pago), o mesmo enviado depois no `PaymentConfirmed`.
-* **Pagamento confirmado:** o OS Service consome `PaymentConfirmed`, coloca a OS em execução e publica `ServiceOrderApproved` (ServiceOrderId, Parts[PartId, Quantity]).
+* **Consultas síncronas de catálogo:** `GET /api/Service`, `GET /api/Parts`, `GET /api/Service/{id}` e `GET /api/Parts/{id}` (além do endpoint `POST /api/Payments` disponível via API Gateway).
+* **Aceite de orçamento (`BudgetApproved`):** ao aprovar o orçamento, o `os-service` muda a OS para `WaitingPayment` e publica `BudgetApproved`. O `billing-service` consome o evento na fila `oficina-billing-events`, valida os itens e cria a preferência no Mercado Pago:
+  * **Sucesso:** grava `PaymentTransaction` (`Pending`) e publica `PaymentCreated` (`serviceOrderId`, `paymentId`, `paymentUrl`, `gatewayTransactionId`).
+  * **Falha (Compensação 1A):** grava o evento processado e publica `PaymentCreationFailed` (`serviceOrderId`, `reason`), fazendo o `os-service` reverter a OS para `AwaitingApproval`.
+* **Recusa durante espera de pagamento (`ServiceOrderRejected`):** caso o cliente recuse a OS em `WaitingPayment`, o `billing-service` consome `ServiceOrderRejected` e cancela pagamentos `Pending` daquela OS.
+* **Pagamento confirmado (`PaymentConfirmed`):** ao receber confirmação no webhook do Mercado Pago, o `billing-service` grava `GatewayPaymentId` (ID numérico do pagamento no MP), muda para `Paid` e publica `PaymentConfirmed`.
 
-### Baixa de estoque da OS aprovada
+### Baixa Atômica de Estoque e Estorno Compensatório (Compensação 2)
 
-1. O billing consome `ServiceOrderApproved` na fila `oficina-billing-events`.
-2. Para cada peça com saldo suficiente, baixa `QuantityInStock` e publica `PartStockEnsured` (ServiceOrderId, PartId, Quantity). O OS Service usa esse evento para marcar `StockQuantityWasEnsured = true` no `ServiceOrderPart`.
-3. Peças sem saldo (ou inexistentes) ficam pendentes: nada é baixado nem publicado para elas. A peça inativa ainda tem estoque físico, então é baixada normalmente.
-4. A baixa, os eventos e o registro da mensagem processada (`EVENT#<eventId>`) são gravados na mesma transação. Mensagens repetidas são ignoradas, e conflitos de versão fazem a mensagem voltar para a fila.
-5. Quando o estoque de uma peça aumenta, o billing publica `PartStockAdded` (PartId, AvailableQuantity). Para tentar de novo as peças pendentes, o OS Service publica um novo `ServiceOrderApproved` contendo **somente** as peças ainda não garantidas.
+1. Após `PaymentConfirmed`, caso a OS possua peças, o `os-service` publica `ServiceOrderApproved` (`ServiceOrderId`, `Parts[PartId, Quantity]`).
+2. O `billing-service` valida **atomicamente** se todas as peças existem e possuem saldo suficiente (`QuantityInStock >= quantidade total solicitada`):
+   * **Todas as peças com saldo suficiente:** debita o estoque de todas as peças e publica `PartStockEnsured` (`ServiceOrderId`, `PartId`, `Quantity`) para cada item na mesma transação DynamoDB.
+   * **Qualquer peça sem estoque ou inexistente (Compensação 2):** **nenhuma peça sofre baixa parcial**; o `billing-service` solicita o estorno integral no Mercado Pago (`POST /v1/payments/{id}/refunds` com `X-Idempotency-Key`), altera o status da `PaymentTransaction` de `Paid` para `Refunded` e publica `PaymentRefunded` (`ServiceOrderId`, `GatewayTransactionId`, `Reason`), fazendo o `os-service` retroagir a OS para `AwaitingApproval` com `IsPaid = false`.
+3. Todas as alterações de estado, eventos no `OUTBOX` e marcação de idempotência (`EVENT#<eventId>`) são persistidas em uma única transação DynamoDB (`TransactWriteItems`).
 
 ### Um pagamento por OS e expiração do checkout
 
@@ -89,16 +92,19 @@ Tópicos `arn:aws:sns:us-east-1:168126498555:oficina-<Evento>`. O envelope é o 
 
 | Evento | Payload |
 |---|---|
+| `PaymentCreated` | `serviceOrderId`, `paymentId`, `paymentUrl`, `gatewayTransactionId` |
+| `PaymentCreationFailed` | `serviceOrderId`, `reason` |
+| `PaymentConfirmed` | `serviceOrderId`, `gatewayTransactionId` |
+| `PaymentExpired` | `serviceOrderId`, `gatewayTransactionId` |
+| `PaymentRefunded` | `serviceOrderId`, `gatewayTransactionId`, `reason` |
 | `PartStockEnsured` | `serviceOrderId`, `partId`, `quantity` |
 | `ServiceDeleted` | `serviceId` |
 | `PartDeleted` | `partId` |
 | `PartStockAdded` | `partId`, `availableQuantity` |
-| `PaymentConfirmed` | `serviceOrderId`, `gatewayTransactionId` |
-| `PaymentExpired` | `serviceOrderId`, `gatewayTransactionId` |
 
 O evento é gravado na mesma transação da mudança de estado e publicado em segundo plano, sem limite de tentativas.
 
-Evento consumido (fila `oficina-billing-events`): `ServiceOrderApproved`, publicado pelo OS Service.
+Eventos consumidos (fila `oficina-billing-events`): `BudgetApproved`, `ServiceOrderApproved` e `ServiceOrderRejected`, publicados pelo OS Service.
 
 ---
 

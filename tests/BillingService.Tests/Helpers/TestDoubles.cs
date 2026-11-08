@@ -15,8 +15,10 @@ public class FakeClock(DateTime start) : TimeProvider
 public class FakeGateway : IPaymentGateway
 {
     public List<ChargeRequest> Charges { get; } = [];
+    public List<string> Refunds { get; } = [];
     public Dictionary<string, GatewayPayment> Transactions { get; } = [];
     public Exception? ChargeFailure { get; set; }
+    public Exception? RefundFailure { get; set; }
 
     public Task<ChargeResult> CreateChargeAsync(ChargeRequest request, CancellationToken cancellationToken)
     {
@@ -34,6 +36,15 @@ public class FakeGateway : IPaymentGateway
 
     public Task<IReadOnlyList<GatewayPayment>> SearchPaymentsAsync(string externalReference, CancellationToken cancellationToken) =>
         Task.FromResult<IReadOnlyList<GatewayPayment>>(Transactions.Values.Where(t => t.ExternalReference == externalReference).ToList());
+
+    public Task RefundPaymentAsync(string gatewayPaymentId, CancellationToken cancellationToken)
+    {
+        if (RefundFailure is not null)
+            throw RefundFailure;
+
+        Refunds.Add(gatewayPaymentId);
+        return Task.CompletedTask;
+    }
 }
 
 public static class TestData

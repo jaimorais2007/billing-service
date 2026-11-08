@@ -260,4 +260,25 @@ public class MercadoPagoClientTests
 
         await Assert.ThrowsAsync<PaymentGatewayException>(() => Client(handler).GetPaymentAsync("1", CancellationToken.None));
     }
+
+    [Fact]
+    public async Task RefundPayment_ShouldPostToRefundsEndpointWithIdempotencyKey()
+    {
+        var handler = new StubHandler(_ => Json("""{"id":9001,"status":"approved"}""", HttpStatusCode.Created));
+
+        await Client(handler).RefundPaymentAsync("778899", CancellationToken.None);
+
+        Assert.Equal(HttpMethod.Post, handler.Request!.Method);
+        Assert.Equal("/v1/payments/778899/refunds", handler.Request.RequestUri!.AbsolutePath);
+        Assert.Equal("refund-778899", handler.Request.Headers.GetValues("X-Idempotency-Key").Single());
+    }
+
+    [Fact]
+    public async Task RefundPayment_WithEmptyIdOrGatewayError_ShouldThrow()
+    {
+        var handler = new StubHandler(_ => Json("""{"message":"cannot refund"}""", HttpStatusCode.BadRequest));
+
+        await Assert.ThrowsAsync<PaymentGatewayException>(() => Client(handler).RefundPaymentAsync(" ", CancellationToken.None));
+        await Assert.ThrowsAsync<PaymentGatewayException>(() => Client(handler).RefundPaymentAsync("778899", CancellationToken.None));
+    }
 }

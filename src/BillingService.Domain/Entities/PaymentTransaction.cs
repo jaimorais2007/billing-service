@@ -12,6 +12,7 @@ public class PaymentTransaction : VersionedEntity
     public Guid ServiceOrderId { get; private set; }
     public decimal TotalAmount { get; private set; }
     public string GatewayTransactionId { get; private set; } = string.Empty;
+    public string? GatewayPaymentId { get; private set; }
     public string PaymentUrl { get; private set; } = string.Empty;
     public PaymentStatus Status { get; private set; }
     public DateTime CreatedAt { get; private set; }
@@ -55,12 +56,14 @@ public class PaymentTransaction : VersionedEntity
         string paymentUrl,
         PaymentStatus status,
         DateTime createdAt,
-        int version) => new()
+        int version,
+        string? gatewayPaymentId = null) => new()
     {
         Id = id,
         ServiceOrderId = serviceOrderId,
         TotalAmount = totalAmount,
         GatewayTransactionId = gatewayTransactionId,
+        GatewayPaymentId = gatewayPaymentId,
         PaymentUrl = paymentUrl,
         Status = status,
         CreatedAt = createdAt,
@@ -70,12 +73,24 @@ public class PaymentTransaction : VersionedEntity
     public bool IsOpenAt(DateTime now, TimeSpan lifetime) =>
         Status is PaymentStatus.Pending or PaymentStatus.Refused && CreatedAt.Add(lifetime) > now;
 
-    public bool Pay()
+    public bool Pay(string? gatewayPaymentId = null)
     {
         if (Status is not (PaymentStatus.Pending or PaymentStatus.Refused or PaymentStatus.Cancelled))
             return false;
 
+        if (!string.IsNullOrWhiteSpace(gatewayPaymentId))
+            GatewayPaymentId = gatewayPaymentId;
+
         Status = PaymentStatus.Paid;
+        return true;
+    }
+
+    public bool Refund()
+    {
+        if (Status != PaymentStatus.Paid)
+            return false;
+
+        Status = PaymentStatus.Refunded;
         return true;
     }
 

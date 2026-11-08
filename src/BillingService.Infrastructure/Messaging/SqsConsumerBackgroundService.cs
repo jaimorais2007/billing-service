@@ -110,8 +110,27 @@ public class SqsConsumerBackgroundService(
 
     private EventEnvelope? TryParseEnvelope(Message message)
     {
+        if (string.IsNullOrWhiteSpace(message.Body))
+            return null;
+
         try
         {
+            using var doc = JsonDocument.Parse(message.Body);
+            var root = doc.RootElement;
+
+            if (root.ValueKind == JsonValueKind.Object &&
+                root.TryGetProperty("Type", out var typeProp) &&
+                typeProp.ValueKind == JsonValueKind.String &&
+                string.Equals(typeProp.GetString(), "Notification", StringComparison.OrdinalIgnoreCase) &&
+                root.TryGetProperty("Message", out var innerProp) &&
+                innerProp.ValueKind == JsonValueKind.String)
+            {
+                var innerJson = innerProp.GetString();
+                return string.IsNullOrWhiteSpace(innerJson)
+                    ? null
+                    : JsonSerializer.Deserialize<EventEnvelope>(innerJson, EventJson.Options);
+            }
+
             return JsonSerializer.Deserialize<EventEnvelope>(message.Body, EventJson.Options);
         }
         catch (JsonException ex)

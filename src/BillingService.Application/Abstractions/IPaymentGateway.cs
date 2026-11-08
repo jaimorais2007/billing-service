@@ -20,6 +20,8 @@ public interface IPaymentGateway
     Task<GatewayPayment?> GetPaymentAsync(string transactionId, CancellationToken cancellationToken);
 
     Task<IReadOnlyList<GatewayPayment>> SearchPaymentsAsync(string externalReference, CancellationToken cancellationToken);
+
+    Task RefundPaymentAsync(string gatewayPaymentId, CancellationToken cancellationToken);
 }
 
 public interface IWebhookSignatureValidator

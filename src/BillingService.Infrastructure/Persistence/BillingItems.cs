@@ -38,19 +38,27 @@ internal static class BillingItems
         ["createdAt"] = S(Timestamp(p.CreatedAt))
     };
 
-    public static Dictionary<string, AttributeValue> ToItem(PaymentTransaction p) => new()
+    public static Dictionary<string, AttributeValue> ToItem(PaymentTransaction p)
     {
-        ["pk"] = S(PaymentPartition),
-        ["sk"] = S(p.Id.ToString("D")),
-        ["entityType"] = S("PaymentTransaction"),
-        ["id"] = S(p.Id.ToString("D")),
-        ["serviceOrderId"] = S(p.ServiceOrderId.ToString("D")),
-        ["totalAmount"] = N(p.TotalAmount),
-        ["gatewayTransactionId"] = S(p.GatewayTransactionId),
-        ["paymentUrl"] = S(p.PaymentUrl),
-        ["status"] = S(p.Status.ToString()),
-        ["createdAt"] = S(Timestamp(p.CreatedAt))
-    };
+        var item = new Dictionary<string, AttributeValue>
+        {
+            ["pk"] = S(PaymentPartition),
+            ["sk"] = S(p.Id.ToString("D")),
+            ["entityType"] = S("PaymentTransaction"),
+            ["id"] = S(p.Id.ToString("D")),
+            ["serviceOrderId"] = S(p.ServiceOrderId.ToString("D")),
+            ["totalAmount"] = N(p.TotalAmount),
+            ["gatewayTransactionId"] = S(p.GatewayTransactionId),
+            ["paymentUrl"] = S(p.PaymentUrl),
+            ["status"] = S(p.Status.ToString()),
+            ["createdAt"] = S(Timestamp(p.CreatedAt))
+        };
+
+        if (!string.IsNullOrWhiteSpace(p.GatewayPaymentId))
+            item["gatewayPaymentId"] = S(p.GatewayPaymentId);
+
+        return item;
+    }
 
     public static Service ToService(Dictionary<string, AttributeValue> item) => Service.Restore(
         Guid.Parse(item["id"].S),
@@ -79,7 +87,8 @@ internal static class BillingItems
         item["paymentUrl"].S,
         Enum.Parse<PaymentStatus>(item["status"].S),
         Date(item["createdAt"]),
-        Version(item));
+        Version(item),
+        item.TryGetValue("gatewayPaymentId", out var gatewayPaymentId) ? gatewayPaymentId.S : null);
 
     public static string Timestamp(DateTime value) =>
         DateTime.SpecifyKind(value, DateTimeKind.Utc).ToString("O", CultureInfo.InvariantCulture);

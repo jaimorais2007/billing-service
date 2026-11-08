@@ -69,6 +69,20 @@ public class MercadoPagoClient(HttpClient http, IOptions<MercadoPagoOptions> opt
         return (search.Results ?? []).Select(ToGatewayPayment).ToList();
     }
 
+    public async Task RefundPaymentAsync(string gatewayPaymentId, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(gatewayPaymentId))
+            throw new PaymentGatewayException("Gateway payment identifier is required to refund a payment.");
+
+        using var message = CreateRequest(
+            HttpMethod.Post,
+            $"/v1/payments/{Uri.EscapeDataString(gatewayPaymentId)}/refunds",
+            $"refund-{gatewayPaymentId}");
+
+        using var response = await SendRawAsync(message, cancellationToken);
+        await EnsureSuccessAsync(response, cancellationToken);
+    }
+
     private static GatewayPayment ToGatewayPayment(PaymentResponse payment) => new(
         payment.Id.ToString(CultureInfo.InvariantCulture),
         payment.Status ?? string.Empty,
