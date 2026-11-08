@@ -1,4 +1,6 @@
 using System.Text.Json;
+using Amazon.DynamoDBv2;
+using Amazon.DynamoDBv2.Model;
 using BillingService.Application.Abstractions;
 using BillingService.Application.Catalog;
 using BillingService.Application.Common;
@@ -6,9 +8,11 @@ using BillingService.Application.Messaging;
 using BillingService.Application.Payments;
 using BillingService.Domain.Entities;
 using BillingService.Domain.Enums;
+using BillingService.Infrastructure.Messaging;
 using BillingService.Infrastructure.Persistence;
 using BillingService.Tests.Helpers;
 using Microsoft.Extensions.Logging.Abstractions;
+using Moq;
 
 namespace BillingService.Tests.Application;
 
@@ -154,5 +158,79 @@ public class SagaChoreographyTests
         Assert.Equal(2, allPayments.Count);
         Assert.Contains(allPayments, p => p.Status == PaymentStatus.Refunded);
         Assert.Contains(allPayments, p => p.Status == PaymentStatus.Pending);
+    }
+
+    [Fact]
+    public async Task SagaEvents_OnDynamoDbStore_ShouldCommitEntityProcessedEventAndOutboxInSingleAtomicTransaction()
+    {
+        var dynamo = new Mock<IAmazonDynamoDB>();
+        TransactWriteItemsRequest? capturedTx = null;
+
+        dynamo
+            .Setup(x => x.GetItemAsync(It.IsAny<GetItemRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new GetItemResponse { Item = [] });
+        dynamo
+            .Setup(x => x.QueryAsync(It.IsAny<QueryRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new QueryResponse { Items = [] });
+        dynamo
+            .Setup(x => x.TransactWriteItemsAsync(It.IsAny<TransactWriteItemsRequest>(), It.IsAny<CancellationToken>()))
+            .Callback<TransactWriteItemsRequest, CancellationToken>((req, _) => capturedTx = req)
+            .ReturnsAsync(new TransactWriteItemsResponse());
+
+        var ddbStore = new DynamoDbBillingStore(dynamo.Object, "oficina-billing");
+        var paymentService = new PaymentAppService(ddbStore, _gateway, _clock, NullLogger<PaymentAppService>.Instance);
+        var budgetHandler = new BudgetApprovedHandler(ddbStore, paymentService, NullLogger<BudgetApprovedHandler>.Instance);
+
+        var orderId = Guid.NewGuid();
+        var envelope = MakeEnvelope(
+            EventTypes.BudgetApproved,
+            orderId,
+            new BudgetApprovedPayload(orderId, 450m, [], []));
+
+        await budgetHandler.HandleAsync(envelope, _ct);
+
+        Assert.NotNull(capturedTx);
+        // Single atomic transaction containing: PAYMENT + OUTBOX(PaymentCreated) + ORDER#claim + EVENT#processed
+        Assert.Equal(4, capturedTx.TransactItems.Count);
+        Assert.Contains(capturedTx.TransactItems, i => i.Put.Item["pk"].S == "PAYMENT");
+        Assert.Contains(capturedTx.TransactItems, i =>
+            i.Put.Item["pk"].S == "OUTBOX" &&
+            i.Put.Item["eventType"].S == EventTypes.PaymentCreated);
+        Assert.Contains(capturedTx.TransactItems, i => i.Put.Item["pk"].S == $"ORDER#{orderId:D}");
+        Assert.Contains(capturedTx.TransactItems, i => i.Put.Item["pk"].S == $"EVENT#{envelope.EventId:D}");
+    }
+
+    [Fact]
+    public async Task SagaOutbox_WhenSnsFailsInitially_ShouldNotLoseMessageAndPublishOnRetry()
+    {
+        var orderId = Guid.NewGuid();
+        await BudgetHandler.HandleAsync(
+            MakeEnvelope(EventTypes.BudgetApproved, orderId, new BudgetApprovedPayload(orderId, 300m, [], [])),
+            _ct);
+
+        var snsPublisher = new Mock<IEventPublisher>();
+        snsPublisher
+            .SetupSequence(p => p.PublishAsync(EventTypes.PaymentCreated, It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new InvalidOperationException("SNS temporary outage"))
+            .Returns(Task.CompletedTask);
+
+        var outboxWorker = new OutboxPublisherBackgroundService(
+            _store,
+            snsPublisher.Object,
+            NullLogger<OutboxPublisherBackgroundService>.Instance);
+
+        // 1st attempt: SNS fails -> Outbox message is preserved (no message loss!) with Attempts = 1
+        Assert.False(await outboxWorker.PublishPendingAsync(_ct));
+        var stillPending = Assert.Single(await _store.GetPendingAsync(10, _ct));
+        Assert.Equal(EventTypes.PaymentCreated, stillPending.EventType);
+        Assert.Equal(1, stillPending.Attempts);
+        Assert.Contains("SNS temporary outage", stillPending.LastError);
+
+        // 2nd attempt: SNS recovers -> Outbox message is published and removed from Outbox
+        Assert.True(await outboxWorker.PublishPendingAsync(_ct));
+        Assert.Empty(await _store.GetPendingAsync(10, _ct));
+        snsPublisher.Verify(
+            p => p.PublishAsync(EventTypes.PaymentCreated, It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()),
+            Times.Exactly(2));
     }
 }
