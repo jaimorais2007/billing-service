@@ -13,7 +13,9 @@ public static class DependencyInjection
         services.AddScoped<ServiceCatalogAppService>();
         services.AddScoped<PartAppService>();
         services.AddScoped<PaymentAppService>();
+        services.AddScoped<IIntegrationEventHandler, BudgetApprovedHandler>();
         services.AddScoped<IIntegrationEventHandler, ServiceOrderApprovedHandler>();
+        services.AddScoped<IIntegrationEventHandler, ServiceOrderRejectedHandler>();
         return services;
     }
 }

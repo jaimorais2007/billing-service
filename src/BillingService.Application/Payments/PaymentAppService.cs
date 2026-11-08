@@ -71,7 +71,7 @@ public class PaymentAppService(
 
         var payment = PaymentTransaction.Create(
             paymentId, request.ServiceOrderId, amount, charge.GatewayTransactionId, charge.PaymentUrl, now);
-        var latest = existing.OrderByDescending(p => p.CreatedAt).FirstOrDefault();
+        var latest = existing.Reverse().OrderByDescending(p => p.CreatedAt).FirstOrDefault();
 
         await store.CommitAsync(
             new BillingChanges().Save(payment).ClaimOrder(request.ServiceOrderId, latest?.Id, paymentId),
@@ -79,6 +79,96 @@ public class PaymentAppService(
 
         logger.LogInformation("Payment {PaymentId} created for service order {ServiceOrderId}", paymentId, request.ServiceOrderId);
         return new CreatePaymentOutcome(ToDto(payment), true);
+    }
+
+    public async Task CreateFromBudgetApprovedAsync(
+        EventEnvelope envelope,
+        BudgetApprovedPayload payload,
+        CancellationToken cancellationToken)
+    {
+        var serviceOrderId = payload.ServiceOrderId != Guid.Empty ? payload.ServiceOrderId : envelope.CorrelationId;
+
+        try
+        {
+            if (serviceOrderId == Guid.Empty)
+                throw new DomainException("The payment must be linked to a service order.");
+
+            if (payload.TotalAmount <= 0)
+                throw new DomainException("The payment value must be greater than zero.");
+
+            var now = clock.GetUtcNow().UtcDateTime;
+            var existing = await store.ListPaymentsAsync(serviceOrderId, cancellationToken);
+
+            if (existing.Any(p => p.Status == PaymentStatus.Paid))
+                throw new DomainException("This service order already has a paid payment.");
+
+            var open = existing.FirstOrDefault(p => p.IsOpenAt(now, gateway.CheckoutLifetime));
+            if (open is not null)
+            {
+                if (open.TotalAmount != payload.TotalAmount)
+                    throw new ConcurrencyConflictException("This service order already has an open payment with a different value.");
+
+                await store.CommitAsync(
+                    new BillingChanges()
+                        .MarkProcessed(envelope)
+                        .Publish(
+                            EventTypes.PaymentCreated,
+                            serviceOrderId,
+                            new PaymentCreatedPayload(serviceOrderId, open.Id, open.PaymentUrl, open.GatewayTransactionId)),
+                    cancellationToken);
+                return;
+            }
+
+            var request = new CreatePaymentRequest(
+                serviceOrderId,
+                TotalAmount: payload.TotalAmount,
+                ServiceIds: payload.ServiceIds,
+                Parts: payload.Parts?.Select(p => new PaymentPartRequest(p.PartId, p.Quantity)).ToList());
+
+            await EnsureItemsAreValidAsync(request, cancellationToken);
+
+            var paymentId = Guid.NewGuid();
+            var charge = await gateway.CreateChargeAsync(
+                new ChargeRequest(paymentId, serviceOrderId, payload.TotalAmount, now.Add(gateway.CheckoutLifetime)),
+                cancellationToken);
+
+            var payment = PaymentTransaction.Create(
+                paymentId, serviceOrderId, payload.TotalAmount, charge.GatewayTransactionId, charge.PaymentUrl, now);
+            var latest = existing.Reverse().OrderByDescending(p => p.CreatedAt).FirstOrDefault();
+
+            await store.CommitAsync(
+                new BillingChanges()
+                    .Save(payment)
+                    .ClaimOrder(serviceOrderId, latest?.Id, paymentId)
+                    .MarkProcessed(envelope)
+                    .Publish(
+                        EventTypes.PaymentCreated,
+                        serviceOrderId,
+                        new PaymentCreatedPayload(serviceOrderId, payment.Id, payment.PaymentUrl, payment.GatewayTransactionId)),
+                cancellationToken);
+
+            logger.LogInformation(
+                "Payment {PaymentId} created via Saga BudgetApproved for service order {ServiceOrderId}",
+                paymentId,
+                serviceOrderId);
+        }
+        catch (Exception ex) when (ex is DomainException or ConcurrencyConflictException or PaymentGatewayException)
+        {
+            logger.LogWarning(
+                ex,
+                "Failed to create payment via Saga BudgetApproved for service order {ServiceOrderId}: {Reason}",
+                serviceOrderId,
+                ex.Message);
+
+            await store.CommitAsync(
+                new BillingChanges()
+                    .MarkProcessed(envelope)
+                    .Publish(
+                        EventTypes.PaymentCreationFailed,
+                        serviceOrderId,
+                        new PaymentCreationFailedPayload(serviceOrderId, ex.Message)),
+                cancellationToken);
+        }
     }
 
     public async Task<NotificationResult> HandleGatewayNotificationAsync(string transactionId, CancellationToken cancellationToken)
@@ -132,7 +222,7 @@ public class PaymentAppService(
 
         if (transaction.Status == ApprovedStatus)
         {
-            if (await CanPayAsync(payment, transaction, cancellationToken) && payment.Pay())
+            if (await CanPayAsync(payment, transaction, cancellationToken) && payment.Pay(transaction.TransactionId))
                 changes.Save(payment).Publish(
                     EventTypes.PaymentConfirmed,
                     payment.ServiceOrderId,

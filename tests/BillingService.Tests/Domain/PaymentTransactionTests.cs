@@ -87,4 +87,18 @@ public class PaymentTransactionTests
         Assert.False(payment.Refuse());
         Assert.Equal(PaymentStatus.Paid, payment.Status);
     }
+
+    [Fact]
+    public void Refund_ShouldOnlyApplyToPaidAndPreserveGatewayPaymentId()
+    {
+        var payment = TestData.NewPayment();
+        Assert.False(payment.Refund());
+
+        Assert.True(payment.Pay("MP-999111"));
+        Assert.Equal("MP-999111", payment.GatewayPaymentId);
+
+        Assert.True(payment.Refund());
+        Assert.Equal(PaymentStatus.Refunded, payment.Status);
+        Assert.False(payment.Refund());
+    }
 }

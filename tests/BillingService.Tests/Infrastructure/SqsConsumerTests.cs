@@ -79,6 +79,27 @@ public class SqsConsumerTests
     }
 
     [Fact]
+    public async Task Process_WithSnsNotificationWrapper_ShouldUnwrapAndHandle()
+    {
+        var sqs = new Mock<IAmazonSQS>();
+        var handler = new RecordingHandler(EventTypes.BudgetApproved);
+        var envelope = new EventEnvelope(Guid.NewGuid(), EventTypes.BudgetApproved, TestData.Now, Guid.NewGuid(), JsonSerializer.SerializeToElement(new { }));
+        var snsBody = JsonSerializer.Serialize(new
+        {
+            Type = "Notification",
+            MessageId = "sns-100",
+            Message = JsonSerializer.Serialize(envelope, EventJson.Options)
+        });
+
+        var msg = new Message { MessageId = "m1", ReceiptHandle = "r1", Body = snsBody };
+
+        await Consumer(sqs.Object, QueueUrl, handler).ProcessMessageAsync(sqs.Object, msg, QueueUrl, CancellationToken.None);
+
+        Assert.Single(handler.Received);
+        VerifyDeleted(sqs, Times.Once());
+    }
+
+    [Fact]
     public async Task Process_WithHandlerFailure_ShouldNotDeleteSoItGoesToDlq()
     {
         var sqs = new Mock<IAmazonSQS>();
