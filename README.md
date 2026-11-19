@@ -6,6 +6,8 @@ Microsserviço de **serviços, peças e pagamento** da arquitetura v2. Cobre exa
 
 Feito em **.NET 8**, com Clean Architecture, **DynamoDB** e eventos publicados no **SNS** por meio de outbox. Nenhum serviço acessa o banco de outro.
 
+**Arquitetura geral, Saga e tecnologias:** [infra-terraform/docs/ARQUITETURA.md](https://github.com/jaimorais2007/infra-terraform/blob/main/docs/ARQUITETURA.md)
+
 ---
 
 ## Casos de uso
